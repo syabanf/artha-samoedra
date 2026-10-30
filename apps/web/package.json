@@ -1,0 +1,32 @@
+{
+  "name": "@artha/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@artha/fixtures": "workspace:*",
+    "@artha/tailwind-config": "workspace:*",
+    "@artha/types": "workspace:*",
+    "@artha/ui": "workspace:*",
+    "lucide-react": "^0.511.0",
+    "radix-ui": "^1.4.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router": "^7.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.0",
+    "tailwindcss": "^4.1.8",
+    "tw-animate-css": "^1.3.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

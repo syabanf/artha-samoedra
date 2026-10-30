@@ -1,0 +1,126 @@
+@import 'tailwindcss';
+@import '@artha/tailwind-config/theme.css';
+@source '../../../packages/ui/src';
+
+/* Serif display face for the landing page and public site headings only; the console stays DM Sans. */
+@theme {
+  --font-display: 'Fraunces', ui-serif, Georgia, serif;
+}
+
+/* Public-site motion (site/motion.tsx). The theme's reduced-motion rule cuts these to an instant change. */
+.reveal {
+  opacity: 0;
+  translate: 0 28px;
+  transition:
+    opacity 0.8s cubic-bezier(0.2, 0.7, 0.2, 1),
+    translate 0.8s cubic-bezier(0.2, 0.7, 0.2, 1),
+    scale 0.8s cubic-bezier(0.2, 0.7, 0.2, 1),
+    clip-path 1.2s cubic-bezier(0.7, 0, 0.2, 1);
+  transition-delay: var(--d, 0ms);
+}
+.reveal-scale {
+  scale: 0.94;
+}
+.reveal-clip {
+  opacity: 1;
+  translate: none;
+  clip-path: inset(100% 0 0 0 round 28px);
+}
+.reveal[data-shown] {
+  opacity: 1;
+  translate: none;
+  scale: none;
+  clip-path: inset(0 0 0 0 round 0);
+}
+
+.word {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+  padding-bottom: 0.1em;
+  margin-bottom: -0.1em;
+}
+.word > span {
+  display: inline-block;
+  animation: word-rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i) * 70ms + var(--base, 0ms));
+}
+@keyframes word-rise {
+  from {
+    transform: translateY(110%);
+  }
+}
+
+.kenburns {
+  animation: kenburns 2.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes kenburns {
+  from {
+    transform: scale(1.14);
+  }
+}
+
+.fade-img {
+  opacity: 0;
+  transition: opacity 0.7s ease;
+}
+.fade-img[data-loaded] {
+  opacity: 1;
+}
+.shimmer {
+  background-image: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--color-on-ink) 9%, transparent) 50%, transparent 70%);
+  background-size: 220% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+.shimmer:has(> img[data-loaded]) {
+  animation: none;
+  background-image: none;
+}
+@keyframes shimmer {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+
+.route-progress {
+  animation: route-progress 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes route-progress {
+  from {
+    translate: -100% 0;
+  }
+  to {
+    translate: 300% 0;
+  }
+}
+
+.splash {
+  transition: opacity 0.6s ease, visibility 0.6s;
+}
+.splash-leave {
+  opacity: 0;
+  visibility: hidden;
+}
+.splash-mark {
+  animation: splash-pop 0.7s cubic-bezier(0.3, 1.4, 0.5, 1) both;
+}
+@keyframes splash-pop {
+  from {
+    scale: 0.6;
+    opacity: 0;
+  }
+}
+.splash-bar {
+  animation: splash-bar 1.4s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@keyframes splash-bar {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}

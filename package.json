@@ -1,0 +1,18 @@
+{
+  "name": "artha-samoedra",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "dev": "pnpm --filter @artha/web dev",
+    "build": "pnpm --filter @artha/web build",
+    "preview": "pnpm --filter @artha/web preview",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @artha/fixtures test"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}

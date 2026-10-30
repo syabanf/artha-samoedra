@@ -1,0 +1,1 @@
+{ "name": "@artha/tailwind-config", "private": true, "exports": { "./theme.css": "./theme.css" } }
