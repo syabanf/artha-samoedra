@@ -1,7 +1,7 @@
 import { currentExclusive, daysLeft, exclusiveState, fmtAgo, fmtIdrShort, shareAmounts } from '@artha/fixtures'
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, CountBadge, EmptyState, Kicker, StatCard } from '@artha/ui'
 import { AGENT_EVENT_KIND_LABEL, OPEN_INQUIRY_STATUSES } from '@artha/types'
-import { Building2, CircleDollarSign, MessagesSquare, ShieldCheck, Sparkles } from 'lucide-react'
+import { Building2, CircleDollarSign, MessagesSquare, MonitorSmartphone, ShieldCheck, Sparkles } from 'lucide-react'
 import { Link, useNavigate } from 'react-router'
 import { ExclusiveBadge, InquiryStatusBadge } from '../../components/badges'
 import { paths } from '../../components/links'
@@ -34,9 +34,17 @@ export function DashboardPage() {
   return (
     <div className="space-y-4">
       <h1 className="sr-only">Dashboard</h1>
-      <div className="text-[28px] font-bold leading-tight tracking-tight">
-        Hi, {user.name.split(' ')[0]}
-        <span className="text-accent">.</span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[28px] font-bold leading-tight tracking-tight">
+          Hi, {user.name.split(' ')[0]}
+          <span className="text-accent">.</span>
+        </div>
+        <Button variant="secondary" asChild>
+          <Link to={paths.os}>
+            <MonitorSmartphone />
+            Open desktop view
+          </Link>
+        </Button>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">

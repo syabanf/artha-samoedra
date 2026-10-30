@@ -58,14 +58,20 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Desktop windows frame console pages; only the top window runs the jobs, so they fire once.
     if (window.top !== window.self) return
+    // Each job reads the state the previous one left, so a re-run (React dev mounts twice) sends nothing twice.
+    const job = (action: AppAction) => {
+      const envelope = { action, meta: { by: JESSY, at: nowIso() } }
+      latest.current = reduce(latest.current, envelope)
+      raw(envelope)
+    }
     const run = () => {
       const ids = sweepTargets(latest.current, nowMs()).map((e) => e.id)
-      if (ids.length) raw({ action: { type: 'exclusives/sweep', ids }, meta: { by: JESSY, at: nowIso() } })
+      if (ids.length) job({ type: 'exclusives/sweep', ids })
       const overdue = overdueToFlag(latest.current, nowMs()).map((t) => t.id)
-      if (overdue.length) raw({ action: { type: 'tasks/flagOverdue', ids: overdue }, meta: { by: JESSY, at: nowIso() } })
-      if (sweepDue(latest.current, nowMs())) raw({ action: { type: 'ops/sweep' }, meta: { by: JESSY, at: nowIso() } })
-      if (contentDue(latest.current, nowMs())) raw({ action: { type: 'social/publishDue' }, meta: { by: JESSY, at: nowIso() } })
-      if (contractsDue(latest.current, nowMs())) raw({ action: { type: 'hr/sweep' }, meta: { by: JESSY, at: nowIso() } })
+      if (overdue.length) job({ type: 'tasks/flagOverdue', ids: overdue })
+      if (sweepDue(latest.current, nowMs())) job({ type: 'ops/sweep' })
+      if (contentDue(latest.current, nowMs())) job({ type: 'social/publishDue' })
+      if (contractsDue(latest.current, nowMs())) job({ type: 'hr/sweep' })
     }
     run()
     const timer = setInterval(run, 60_000)

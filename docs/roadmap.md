@@ -179,6 +179,18 @@ Open items:
 - **Jessy matching:** it uses rule-based word matching. An LLM engine can replace `consoleTurn` behind the same Turn shape.
 - **Check-in from chat:** it sends no photo or location.
 
+## Next (proposed 2026-10-30)
+
+All eight phases are built on the mock store. This order is a proposal for the client review, not a commitment.
+
+| When | Item | Why now |
+| --- | --- | --- |
+| Now | Client logo files, a module walkthrough, change requests | The brand slots and every module are ready for review |
+| Next | Backend API and database, file storage, a real model behind Jessy | Every module runs in browser storage today, and uploads are data URLs |
+| Later | e-Faktur submission, PPh 21 TER tables, BPJS split per programme | Tax work needs live data and the backend first |
+
+The roadmap update deck is `docs/deck/Artha_Samoedra_Roadmap_Update.pptx`, built by `docs/deck/build_deck.py`.
+
 ## Left out
 
 Gym classes and HYROX, spa treatments, POS cashier, kitchen display and tables, ticketing gates and wristbands, retail shop and wholesale, photobooth, CRM gamification (XP, badges, avatars, wallpapers).

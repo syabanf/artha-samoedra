@@ -2,3 +2,7 @@ node_modules
 dist
 *.log
 .DS_Store
+
+# Generated decks: rebuild with docs/deck/build_deck.py
+*.pptx
+*.pdf
