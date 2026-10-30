@@ -124,3 +124,50 @@
     width: 100%;
   }
 }
+
+/* Site header (site/SiteHeader.tsx): the logo wipes in once, the phone menu opens as a circle from its button. */
+.logo-rise {
+  animation: logo-rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes logo-rise {
+  from {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0;
+    translate: -8px 0;
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.menu-sheet {
+  animation: menu-open 0.55s cubic-bezier(0.7, 0, 0.2, 1) both;
+}
+.menu-sheet-leave {
+  animation: menu-close 0.38s cubic-bezier(0.7, 0, 0.2, 1) both;
+}
+@keyframes menu-open {
+  from {
+    clip-path: circle(0% at calc(100% - 2.25rem) 2.5rem);
+  }
+  to {
+    clip-path: circle(150% at calc(100% - 2.25rem) 2.5rem);
+  }
+}
+@keyframes menu-close {
+  from {
+    clip-path: circle(150% at calc(100% - 2.25rem) 2.5rem);
+  }
+  to {
+    clip-path: circle(0% at calc(100% - 2.25rem) 2.5rem);
+  }
+}
+.menu-item {
+  animation: menu-item 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(0.18s + var(--i, 0) * 60ms);
+}
+@keyframes menu-item {
+  from {
+    opacity: 0;
+    translate: 0 24px;
+  }
+}

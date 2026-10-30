@@ -1,88 +1,20 @@
 import { buyerStart, buyerTurn, type AppState } from '@artha/fixtures'
 import { Button, cn, FOCUS, Toaster } from '@artha/ui'
-import { Menu, Sparkles, X } from 'lucide-react'
+import { Sparkles, X } from 'lucide-react'
 import { createContext, use, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Link, NavLink, Outlet, useMatch } from 'react-router'
+import { Link, Outlet, useMatch } from 'react-router'
 import { JessyChat, useJessyChat } from '../components/JessyChat'
 import { BrandLogo } from '../components/BrandMark'
 import { paths } from '../components/links'
 import { useAppState } from '../state/store'
 import { RouteProgress } from './motion'
+import { SiteHeader } from './SiteHeader'
 
 interface WidgetCtx {
   open: (focusId?: string | null, firstMessage?: string) => void
 }
 const WidgetContext = createContext<WidgetCtx>({ open: () => {} })
 export const useJessyWidget = () => use(WidgetContext)
-
-const NAV = [
-  { to: paths.home, label: 'Home' },
-  { to: paths.assets, label: 'Properties' },
-  { to: paths.areas, label: 'Areas' },
-  { to: paths.blog, label: 'Blog' },
-  { to: paths.partnerPortal, label: 'For partners' },
-]
-
-/** One header for every public page: pill nav in the middle, a frosted bar once the page scrolls. */
-function SiteHeader({ onAsk }: { onAsk: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [scrolled, setScrolled] = useState(false)
-  useEffect(() => {
-    const onScroll = () => setScrolled(scrollY > 8)
-    onScroll()
-    addEventListener('scroll', onScroll, { passive: true })
-    return () => removeEventListener('scroll', onScroll)
-  }, [])
-  const pill = ({ isActive }: { isActive: boolean }) =>
-    cn('rounded-full px-4 py-2 text-sm font-semibold transition-colors', isActive ? 'bg-ink text-on-ink' : 'text-muted hover:bg-card hover:text-foreground', FOCUS)
-  return (
-    <header className={cn('sticky top-0 z-40 transition-[background-color,box-shadow] duration-300', scrolled || open ? 'bg-card/85 shadow-card backdrop-blur' : 'bg-transparent')}>
-      <div className={cn('mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 transition-[height] duration-300 sm:px-6', scrolled ? 'h-16' : 'h-20')}>
-        <Link to={paths.home} className={cn('rounded-xl', FOCUS)} aria-label="Artha Samoedra, home">
-          <Logo />
-        </Link>
-        <nav aria-label="Main" className="hidden items-center gap-1 rounded-full bg-surface p-1 lg:flex">
-          {NAV.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.to === paths.home || n.to === paths.partnerPortal} className={pill}>
-              {n.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2">
-          <Link to={paths.console} className={cn('hidden rounded-full px-3 py-2 text-sm font-semibold text-muted hover:text-foreground xl:inline', FOCUS)}>
-            Team login
-          </Link>
-          <Button variant="outline" onClick={onAsk} aria-label="Ask Jessy" className="max-sm:size-10 max-sm:px-0">
-            <Sparkles />
-            <span className="max-sm:hidden">Ask Jessy</span>
-          </Button>
-          <Button variant="secondary" className="hidden sm:inline-flex" asChild>
-            <Link to={paths.partnerPortal}>List a property</Link>
-          </Button>
-          <Button variant="card" size="icon" className="lg:hidden" aria-label={open ? 'Close menu' : 'Open menu'} aria-expanded={open} onClick={() => setOpen(!open)}>
-            {open ? <X /> : <Menu />}
-          </Button>
-        </div>
-      </div>
-      {open && (
-        <nav aria-label="Mobile menu" className="flex flex-col gap-1 px-4 pb-4 pt-1 animate-in fade-in slide-in-from-top-2 duration-300 lg:hidden">
-          {[...NAV, { to: paths.buyerPortal, label: 'My account' }, { to: paths.console, label: 'Team login' }].map((n, i) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              end={n.to === paths.home}
-              onClick={() => setOpen(false)}
-              style={{ animationDelay: `${i * 40}ms` }}
-              className={({ isActive }) => cn('rounded-2xl px-4 py-3 text-sm font-semibold animate-in fade-in slide-in-from-top-1 fill-mode-both', isActive ? 'bg-ink text-on-ink' : 'hover:bg-surface')}
-            >
-              {n.label}
-            </NavLink>
-          ))}
-        </nav>
-      )}
-    </header>
-  )
-}
 
 export const Logo = BrandLogo
 

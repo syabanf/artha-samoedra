@@ -210,7 +210,7 @@ function TopBar({
     <header className="relative z-[1000] flex h-11 shrink-0 items-center gap-2 bg-ink/70 px-3 backdrop-blur-xl">
       <h1 className="sr-only">Desktop</h1>
       <Link to={paths.console} className={cn('flex items-center gap-2 rounded-lg px-1.5 py-1 hover:bg-white/10', FOCUS)}>
-        <BrandMark className="h-5 w-6" fallback={<span className="flex size-6 items-center justify-center rounded-md bg-accent-strong text-[10px] font-extrabold text-white">AS</span>} />
+        <BrandMark onInk className="size-6" />
         <span className="hidden text-sm font-bold lg:inline">Artha Samoedra</span>
         <span className="sr-only lg:hidden">Artha Samoedra console</span>
       </Link>

@@ -32,8 +32,8 @@
      Example, Indomaret (sampled from the logo, see branding.md): #d61d25 / #b3161d / #93151b / #fdf1f1,
      info #1763bf / #edf5fe, highlight #ffcf20, with the blue #006ab3 as the ink */
   --color-accent: #0e9ed8; /* Artha Samoedra ocean blue, sampled from the logo wave */
-  --color-accent-strong: #1b4f86; /* the navy of the logo wordmark */
-  --color-accent-dark: #153f6c;
+  --color-accent-strong: #04345c; /* the navy of the logo wordmark */
+  --color-accent-dark: #032845;
   --color-accent-soft: #e6f5fc;
   --color-info: #0b6f75; /* the logo's teal wave, darkened for AA */
   --color-info-soft: #dff4f4;

@@ -101,10 +101,7 @@ function SideRail({ expanded, canExpand, onToggle }: { expanded: boolean; canExp
     >
       <Link to={paths.console} className={cn('flex items-center gap-3 rounded-2xl', FOCUS, expanded && 'px-1')}>
         <span className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-white/5">
-          <BrandMark
-            className="h-6 w-8"
-            fallback={<span className="flex size-7 items-center justify-center rounded-lg bg-accent-strong text-[11px] font-extrabold text-white">{state.appearance.logoText}</span>}
-          />
+          <BrandMark onInk className="size-8" />
         </span>
         {expanded && (
           <span className="min-w-0">
