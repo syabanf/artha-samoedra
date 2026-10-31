@@ -97,12 +97,21 @@ export function rectOf(win: Win, area: { w: number; h: number }): Rect {
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi))
 
-/** A new window cascades from the top left, a step further for each open window. */
+/**
+ * A new window's place. Below 1024 px a module opens maximized, since a tablet has no room for two;
+ * small built-in apps keep their own size. Wider screens get a window that grows with the screen,
+ * near the centre, cascading a step for each window already open.
+ */
 export function newWin(app: OsApp, area: { w: number; h: number }, open: number): Win {
-  const w = Math.min(app.size?.w ?? 980, area.w - 48)
-  const h = Math.min(app.size?.h ?? 640, area.h - 24)
+  const base = { id: app.id, openedAt: Date.now(), min: false, snap: null }
+  if (area.w < 1024 && !app.size) return { ...base, x: 0, y: 0, w: area.w, h: area.h, max: true }
+  const margin = 24
+  const w = Math.min(app.size?.w ?? clamp(Math.round(area.w * 0.62), 760, 1280), area.w - 2 * margin)
+  const h = Math.min(app.size?.h ?? clamp(Math.round(area.h * 0.84), 520, 900), area.h - margin)
   const step = (open % 6) * 28
-  return { id: app.id, openedAt: Date.now(), x: Math.min(120 + step, Math.max(0, area.w - w)), y: Math.min(16 + step, Math.max(0, area.h - h)), w, h, min: false, max: false, snap: null }
+  const x = clamp(Math.round((area.w - w) / 2) + step, margin, area.w - w - margin)
+  const y = clamp(16 + step, 0, area.h - h)
+  return { ...base, x, y, w, h, max: false }
 }
 
 export const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches

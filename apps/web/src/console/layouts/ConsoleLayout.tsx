@@ -1,6 +1,6 @@
 import { fmtAgo, fmtDateLong, nowIso } from '@artha/fixtures'
 import { Banner, Button, cn, CountBadge, EmptyState, FOCUS, IconTile, Sheet, Toaster, useIsPhone, useMediaQuery } from '@artha/ui'
-import { Bell, BellOff, Ellipsis, ExternalLink, LogOut, PanelLeftClose, PanelLeftOpen, RotateCcw, Sparkles } from 'lucide-react'
+import { Bell, BellOff, Ellipsis, ExternalLink, LogOut, MonitorSmartphone, PanelLeftClose, PanelLeftOpen, RotateCcw, Sparkles } from 'lucide-react'
 import { Popover } from 'radix-ui'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
@@ -212,6 +212,11 @@ function Header({ onMenu }: { onMenu: () => void }) {
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <SearchLauncher />
+        <Button variant="card" size="icon-lg" className="max-md:hidden" asChild>
+          <Link to={paths.os} aria-label="Open desktop view" title="Open desktop view">
+            <MonitorSmartphone />
+          </Link>
+        </Button>
         <AssistantLauncher />
         <Notifications />
         <Popover.Root>
