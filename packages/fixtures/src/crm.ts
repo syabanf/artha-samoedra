@@ -84,6 +84,8 @@ export const stageOf = (s: AppState, d: Deal) => s.stages.find((st) => st.id ===
 export const isOpenDeal = (s: AppState, d: Deal) => stageOf(s, d)?.kind === 'open'
 export const netPrice = (q: Pick<Quotation, 'listPrice' | 'discountPct'>) => q.listPrice * (1 - q.discountPct / 100)
 export const needsApproval = (q: Pick<Quotation, 'discountPct'>) => q.discountPct > APPROVAL_DISCOUNT_PCT
+/** The code the next saved quotation takes. */
+export const nextQuotationCode = (s: Pick<AppState, 'quotations'>) => nextCode(s.quotations.map((q) => q.code), 'QT-26-', 4)
 
 export const contactByPhone = (s: AppState, phone: string) => {
   const p = normalizePhone(phone)
@@ -396,7 +398,7 @@ export function crmApply(s: AppState, a: CrmAction, at: string, by: string): App
     case 'quotations/create': {
       const previous = s.quotations.filter((q) => q.dealId === a.quotation.dealId && q.status !== 'superseded' && q.status !== 'accepted' && q.status !== 'rejected')
       const version = 1 + Math.max(0, ...s.quotations.filter((q) => q.dealId === a.quotation.dealId).map((q) => q.version))
-      const quotation = { ...a.quotation, code: nextCode(s.quotations.map((q) => q.code), 'QT-26-', 4), version, status: 'draft' as const, createdBy: by, createdAt: at }
+      const quotation = { ...a.quotation, code: nextQuotationCode(s), version, status: 'draft' as const, createdBy: by, createdAt: at }
       return {
         ...s,
         // A revision replaces every open version of the same deal.

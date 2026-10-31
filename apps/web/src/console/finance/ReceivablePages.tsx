@@ -51,17 +51,18 @@ import {
   type Column,
 } from '@artha/ui'
 import { Ban, CalendarClock, CircleCheck, Download, FileCheck2, FileText, Pencil, Plus, Printer, Receipt, Search, Send, Wallet, X } from 'lucide-react'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useAuth, useUser } from '../../auth/auth'
 import { BackButton } from '../../components/BackButton'
-import { LetterBlock, LetterHead, Signature } from '../../components/Letter'
+import { DocBottom, DocField, DocFields, DocInput, DocNotes, DocSection, DocSelect, DocSummary, DocumentHead, DocumentPickers, DocumentSheet } from '../../components/DocumentSheet'
+import { LetterBlock, Signature } from '../../components/Letter'
 import { CodeLink, paths } from '../../components/links'
 import { NoAccess } from '../../components/NoAccess'
 import { downloadCsv } from '../../lib/csv'
 import { useAppState, useNow, useScoped } from '../../state/store'
 import { useAct } from '../dialogs'
-import { AccountSelect, DocumentLinesEditor, Money, SettleBadge, TotalsBlock } from './parts'
+import { AccountSelect, DocumentLinesEditor, Money, SettleBadge } from './parts'
 
 const STATUSES: InvoiceStatus[] = ['draft', 'issued', 'void']
 const KINDS = Object.keys(CUSTOMER_KIND_LABEL) as CustomerKind[]
@@ -493,6 +494,183 @@ function ReceiptTable({ params, set, clear }: TableProps) {
   )
 }
 
+// ---------------------------------------------------------------- the invoice as a document
+
+/** Link, phone, email and place of the customer an invoice bills. */
+const customerOf = (s: AppState, inv: Invoice) => {
+  if (inv.customerKind === 'contact') {
+    const c = s.contacts.find((x) => x.id === inv.customerId)
+    return { to: c && paths.contact(c.id), phone: c?.phone, email: c?.email, place: c?.city }
+  }
+  if (inv.customerKind === 'account') {
+    const a = s.accounts.find((x) => x.id === inv.customerId)
+    return { to: a && paths.account(a.id), phone: a?.phone, email: undefined, place: [a?.industry, a?.city].filter(Boolean).join(', ') }
+  }
+  const p = s.partners.find((x) => x.id === inv.customerId)
+  return { to: p && paths.partner(p.id), phone: p?.phone, email: p?.email, place: p?.city }
+}
+
+/** The inputs an invoice paper shows in place of text. */
+interface InvoiceEdit {
+  patch: (p: Partial<Invoice>) => void
+  linesError?: string
+}
+
+/** Letterhead, bill-to and date rows, the lines and the totals, as text or as inputs. */
+function InvoicePaper({ inv, number, edit, overdue, stamp, children }: { inv: Invoice; number: string; edit?: InvoiceEdit; overdue?: boolean; stamp?: ReactNode; children?: ReactNode }) {
+  const { state } = useAppState()
+  const totals = invoiceTotals(inv)
+  const customer = customerOf(state, inv)
+  const deal = state.deals.find((d) => d.id === inv.dealId)
+  const listing = state.listings.find((l) => l.id === inv.listingId)
+  const agent = state.users.find((u) => u.id === deal?.ownerId)
+  const journal = state.journals.find((j) => j.id === inv.journalId)
+  const vat = state.financeSettings.vatPct
+  const days = Math.round((Date.parse(inv.dueDate) - Date.parse(inv.date)) / 86_400_000)
+  const name = inv.customerId ? customerName(state, inv) : null
+  const issued = inv.status === 'issued'
+
+  return (
+    <DocumentSheet>
+      <DocumentHead company={state.company} title={inv.taxPct ? 'Tax invoice' : 'Invoice'} number={number} stamp={stamp} />
+      <DocFields
+        left={
+          <>
+            <DocField label="Listing">
+              {edit ? (
+                <DocSelect value={inv.listingId ?? ''} onChange={(e) => edit.patch({ listingId: e.target.value || null })}>
+                  <option value="">No listing</option>
+                  {state.listings.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.code} · {l.title}
+                    </option>
+                  ))}
+                </DocSelect>
+              ) : listing ? (
+                <Link to={paths.listing(listing.id)} className="hover:text-accent">
+                  {listing.title}
+                </Link>
+              ) : (
+                '–'
+              )}
+            </DocField>
+            <DocField label="Bill to" required={!!edit}>
+              {!name ? (
+                <span className="font-normal text-muted">Pick a customer above</span>
+              ) : customer.to && !edit ? (
+                <Link to={customer.to} className="hover:text-accent">
+                  {name}
+                </Link>
+              ) : (
+                name
+              )}
+            </DocField>
+            <DocField label="Customer kind">{CUSTOMER_KIND_LABEL[inv.customerKind]}</DocField>
+            <DocField label="Agent">{agent?.name ?? '–'}</DocField>
+            <DocField label="Phone">{customer.phone || '–'}</DocField>
+            <DocField label="Email">{customer.email || '–'}</DocField>
+            {inv.taxInvoice && <DocField label="Buyer NPWP">{inv.taxInvoice.buyerTaxId}</DocField>}
+          </>
+        }
+        right={
+          <>
+            <DocField label="Invoice date" required={!!edit}>
+              {edit ? <DocInput type="date" value={toDateInput(inv.date)} onChange={(e) => e.target.value && edit.patch({ date: fromDateInput(e.target.value) })} /> : fmtDateLong(inv.date)}
+            </DocField>
+            <DocField label="Due date" required={!!edit}>
+              {edit ? (
+                <DocInput type="date" value={toDateInput(inv.dueDate)} onChange={(e) => e.target.value && edit.patch({ dueDate: fromDateInput(e.target.value) })} />
+              ) : (
+                <span className={overdue ? 'text-accent' : undefined}>{fmtDateLong(inv.dueDate)}</span>
+              )}
+            </DocField>
+            <DocField label="Terms">{days > 0 ? `Net ${days} days` : 'Due on receipt'}</DocField>
+            <DocField label="Location">{customer.place || '–'}</DocField>
+            <DocField label="Deal">{deal ? <CodeLink to={paths.deal(deal.id)} code={deal.code} /> : '–'}</DocField>
+            {!edit && inv.taxPct > 0 && <DocField label="Faktur pajak">{inv.taxInvoice ? <span className="font-mono text-xs">{inv.taxInvoice.number}</span> : 'Not issued'}</DocField>}
+            {!edit && <DocField label="Journal">{journal ? <CodeLink to={paths.journal(journal.id)} code={journal.code} /> : 'Posts on issue'}</DocField>}
+          </>
+        }
+      />
+
+      <DocSection title="Lines">
+        {edit ? (
+          <DocumentLinesEditor lines={inv.lines} onChange={(lines) => edit.patch({ lines })} taxPct={inv.taxPct} accountTypes={['revenue']} error={edit.linesError} showTotals={false} />
+        ) : (
+          <table className="w-full table-fixed text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs text-muted">
+                <th className="py-2 pr-3 font-semibold">Description</th>
+                <th className="hidden w-14 py-2 pl-3 text-right font-semibold sm:table-cell print:table-cell">Qty</th>
+                <th className="hidden w-32 py-2 pl-3 text-right font-semibold sm:table-cell print:table-cell">Unit price</th>
+                <th className="w-32 py-2 pl-3 text-right font-semibold">Amount</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {inv.lines.map((l) => (
+                <tr key={l.id}>
+                  <td className="break-words py-2.5 pr-3">
+                    {l.description}
+                    <div className="text-xs text-muted sm:hidden print:hidden">
+                      {l.qty} × {fmtIdr(l.unitPrice)}
+                    </div>
+                  </td>
+                  <td className="hidden py-2.5 pl-3 text-right tabular-nums sm:table-cell print:table-cell">{l.qty}</td>
+                  <td className="hidden py-2.5 pl-3 text-right sm:table-cell print:table-cell">
+                    <Money value={l.unitPrice} />
+                  </td>
+                  <td className="py-2.5 pl-3 text-right">
+                    <Money value={l.qty * l.unitPrice} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </DocSection>
+
+      <DocBottom
+        notes={
+          <DocNotes label="Notes for this invoice">
+            {edit ? (
+              <Textarea aria-label="Notes for this invoice" className="min-h-24" value={inv.memo} onChange={(e) => edit.patch({ memo: e.target.value })} placeholder="Printed under the lines, for example the payment reference" />
+            ) : (
+              <p className="whitespace-pre-line text-sm">{inv.memo || <span className="text-muted">No notes.</span>}</p>
+            )}
+          </DocNotes>
+        }
+        summary={
+          <DocSummary
+            rows={[
+              { label: 'Subtotal', value: <Money value={totals.subtotal} /> },
+              {
+                label: edit ? (
+                  <>
+                    <Switch checked={inv.taxPct > 0} onCheckedChange={(on) => edit.patch({ taxPct: on ? vat : 0 })} label={`Charge PPN at ${vat}%`} />
+                    PPN {inv.taxPct ? `${inv.taxPct}%` : 'off'}
+                  </>
+                ) : (
+                  `PPN ${inv.taxPct}%`
+                ),
+                value: <Money value={totals.tax} />,
+                tone: 'info',
+              },
+              { label: 'Total', value: <Money value={totals.total} />, tone: 'total' },
+              ...(issued
+                ? [
+                    { label: 'Paid', value: <Money value={totals.paid} /> },
+                    { label: 'Balance due', value: <Money value={totals.balance} className="font-bold" /> },
+                  ]
+                : []),
+            ]}
+          />
+        }
+      />
+      {children}
+    </DocumentSheet>
+  )
+}
+
 // ---------------------------------------------------------------- editor
 
 /** A fresh draft, or one prefilled from a deal: the buyer, the listing and a commission line at the scheme's rate. */
@@ -572,13 +750,20 @@ function InvoiceForm({ existing }: { existing?: Invoice }) {
   const [inv, setInv] = useState<Invoice>(() => existing ?? draftFor(state, params.get('dealId'), user.id))
   const [tried, setTried] = useState(false)
   const patch = (p: Partial<Invoice>) => setInv({ ...inv, ...p })
-  const vat = state.financeSettings.vatPct
   const customers = customersOf(state, inv.customerKind)
   const toSave: Invoice = { ...inv, code: inv.code || nextInvoiceCode(state) }
   const saveAction = { type: 'invoices/save', invoice: toSave } as const
   const blocker = blockerFor(state, saveAction)
   const customerError = inv.customerId ? null : 'Pick a customer.'
-  const linesError = tried && blocker && blocker !== 'Pick a customer.' ? blocker : undefined
+  const linesError = tried && blocker && blocker !== customerError ? blocker : undefined
+  const back = existing ? paths.invoice(existing.id) : paths.invoices
+
+  /** Fills the buyer, the listing and a commission line from a deal, keeping the dates, PPN and notes. */
+  const pullDeal = (dealId: string) => {
+    if (!dealId) return patch({ dealId: null })
+    const { customerKind, customerId, listingId, lines } = draftFor(state, dealId, user.id)
+    patch({ customerKind, customerId, dealId, listingId, lines })
+  }
 
   const save = (issue: boolean) => {
     setTried(true)
@@ -593,102 +778,72 @@ function InvoiceForm({ existing }: { existing?: Invoice }) {
   }
 
   return (
-    <div className="space-y-4">
-      <BackButton fallback={existing ? paths.invoice(existing.id) : paths.invoices} />
-      <PageHeader title={existing ? `Edit ${existing.code}` : 'New invoice'} description="A draft stays off the ledger. Issuing it posts the receivable, the revenue and the output VAT." />
-      <form
-        noValidate
-        onSubmit={(e) => {
-          e.preventDefault()
-          save(false)
-        }}
-        className="space-y-4"
-      >
-        <Card className="p-5 sm:p-6">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <FormField label="Customer kind" required>
-              <NativeSelect value={inv.customerKind} onChange={(e) => patch({ customerKind: e.target.value as CustomerKind, customerId: '' })}>
-                {KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {CUSTOMER_KIND_LABEL[k]}
-                  </option>
-                ))}
-              </NativeSelect>
-            </FormField>
-            <FormField label="Customer" required error={tried ? (customerError ?? undefined) : undefined}>
-              <NativeSelect value={inv.customerId} onChange={(e) => patch({ customerId: e.target.value })}>
-                <option value="">Pick a {CUSTOMER_KIND_LABEL[inv.customerKind].toLowerCase()}</option>
-                {customers.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </FormField>
-            <FormField label="Deal" hint="Optional">
-              <NativeSelect value={inv.dealId ?? ''} onChange={(e) => patch({ dealId: e.target.value || null })}>
-                <option value="">No deal</option>
-                {state.deals.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.code} · {d.title}
-                  </option>
-                ))}
-              </NativeSelect>
-            </FormField>
-            <FormField label="Listing" hint="Optional">
-              <NativeSelect value={inv.listingId ?? ''} onChange={(e) => patch({ listingId: e.target.value || null })}>
-                <option value="">No listing</option>
-                {state.listings.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.code} · {l.title}
-                  </option>
-                ))}
-              </NativeSelect>
-            </FormField>
-            <FormField label="Invoice date" required>
-              <Input type="date" value={toDateInput(inv.date)} onChange={(e) => e.target.value && patch({ date: fromDateInput(e.target.value) })} />
-            </FormField>
-            <FormField label="Due date" required hint={`${Math.round((Date.parse(inv.dueDate) - Date.parse(inv.date)) / 86_400_000)} days after the invoice date`}>
-              <Input type="date" value={toDateInput(inv.dueDate)} onChange={(e) => e.target.value && patch({ dueDate: fromDateInput(e.target.value) })} />
-            </FormField>
-          </div>
-        </Card>
+    <form
+      noValidate
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        save(false)
+      }}
+    >
+      <BackButton fallback={back} />
+      <PageHeader title={existing ? `Edit ${existing.code}` : 'New invoice'} description="A draft stays off the ledger. Issuing it posts the receivable, the revenue and the PPN." />
+      <DocumentPickers>
+        <FormField label="Customer kind" required>
+          <NativeSelect value={inv.customerKind} onChange={(e) => patch({ customerKind: e.target.value as CustomerKind, customerId: '' })}>
+            {KINDS.map((k) => (
+              <option key={k} value={k}>
+                {CUSTOMER_KIND_LABEL[k]}
+              </option>
+            ))}
+          </NativeSelect>
+        </FormField>
+        <FormField label="Customer" required error={tried ? (customerError ?? undefined) : undefined}>
+          <NativeSelect value={inv.customerId} onChange={(e) => patch({ customerId: e.target.value })}>
+            <option value="">Pick a {CUSTOMER_KIND_LABEL[inv.customerKind].toLowerCase()}</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </NativeSelect>
+        </FormField>
+        <FormField label="Pull from deal" hint="Fills the buyer, the listing and a commission line">
+          <NativeSelect value={inv.dealId ?? ''} onChange={(e) => pullDeal(e.target.value)}>
+            <option value="">No deal</option>
+            {state.deals.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.code} · {d.title}
+              </option>
+            ))}
+          </NativeSelect>
+        </FormField>
+      </DocumentPickers>
 
-        <Card className="p-5 sm:p-6">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">Lines</h2>
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={inv.taxPct > 0} onCheckedChange={(on) => patch({ taxPct: on ? vat : 0 })} label={`Charge VAT at ${vat}%`} />
-              Charge VAT at {vat}%
-            </label>
-          </div>
-          <DocumentLinesEditor lines={inv.lines} onChange={(lines) => patch({ lines })} taxPct={inv.taxPct} accountTypes={['revenue']} error={linesError} />
-        </Card>
+      <InvoicePaper inv={toSave} number={toSave.code} edit={{ patch, linesError }} />
 
-        <Card className="p-5 sm:p-6">
-          <FormField label="Memo" hint="Printed under the lines">
-            <Textarea rows={2} value={inv.memo} onChange={(e) => patch({ memo: e.target.value })} />
-          </FormField>
-        </Card>
-
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button type="button" variant="outline" onClick={() => navigate(existing ? paths.invoice(existing.id) : paths.invoices)}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="outline">
-            Save draft
-          </Button>
-          <Button type="button" onClick={() => save(true)}>
-            <Send />
-            Save and issue
-          </Button>
-        </div>
-      </form>
-    </div>
+      <div className="flex flex-wrap justify-end gap-2 print:hidden">
+        <Button type="button" variant="outline" onClick={() => navigate(back)}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="outline">
+          Save draft
+        </Button>
+        <Button type="button" onClick={() => save(true)}>
+          <Send />
+          Save and issue
+        </Button>
+      </div>
+    </form>
   )
 }
 
 // ---------------------------------------------------------------- detail: printable invoice
+
+const STAMP = { accent: 'border-accent text-accent', warning: 'border-warning text-warning', success: 'border-success text-success' }
+const Stamp = ({ tone, children }: { tone: keyof typeof STAMP; children: ReactNode }) => (
+  <div className={`-rotate-6 rounded-lg border-2 px-3 py-1 text-sm font-extrabold uppercase tracking-widest ${STAMP[tone]}`}>{children}</div>
+)
 
 export function InvoiceDetailPage() {
   const { id } = useParams()
@@ -728,18 +883,7 @@ export function InvoiceDetailPage() {
   // A valid-looking NPWP, so the check reports every other reason the faktur cannot go out yet.
   const fakturBlocker = blockerFor(state, { type: 'invoices/taxInvoice', id: inv.id, buyerTaxId: '000000000000000' })
 
-  const customer = (() => {
-    if (inv.customerKind === 'contact') {
-      const c = state.contacts.find((x) => x.id === inv.customerId)
-      return { to: c && paths.contact(c.id), lines: [c?.phone, c?.email, c?.city] }
-    }
-    if (inv.customerKind === 'account') {
-      const a = state.accounts.find((x) => x.id === inv.customerId)
-      return { to: a && paths.account(a.id), lines: [a?.industry, a?.phone, a?.city] }
-    }
-    const p = state.partners.find((x) => x.id === inv.customerId)
-    return { to: p && paths.partner(p.id), lines: [p?.phone, p?.email, p?.city] }
-  })()
+  const customer = customerOf(state, inv)
 
   return (
     <div className="space-y-4">
@@ -855,75 +999,20 @@ export function InvoiceDetailPage() {
         </Banner>
       )}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] print:block">
-        <Card className="min-w-0 p-6 sm:p-10 print:max-w-none print:border-0 print:p-0">
-          <LetterHead company={state.company} />
-          <div className="mt-6 flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-lg font-bold">{inv.taxPct ? 'Tax invoice' : 'Invoice'}</div>
-              <div className="font-mono text-xs text-muted">{inv.code}</div>
-              <div className="mt-1 text-sm text-muted">{fmtDateLong(inv.date)}</div>
-            </div>
-            {inv.status !== 'issued' && (
-              <div className={`-rotate-6 rounded-lg border-2 px-3 py-1 text-sm font-extrabold uppercase tracking-widest ${inv.status === 'void' ? 'border-accent text-accent' : 'border-warning text-warning'}`}>
-                {INVOICE_STATUS_LABEL[inv.status]}
-              </div>
-            )}
-            {settle === 'paid' && <div className="-rotate-6 rounded-lg border-2 border-success px-3 py-1 text-sm font-extrabold uppercase tracking-widest text-success">Paid</div>}
-          </div>
-
-          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <LetterBlock title="Bill to">
-              <div className="font-semibold">{name}</div>
-              {customer.lines.filter(Boolean).map((l) => (
-                <div key={l}>{l}</div>
-              ))}
-              {inv.taxInvoice && <div>NPWP {inv.taxInvoice.buyerTaxId}</div>}
-            </LetterBlock>
-            <LetterBlock title="Invoice details">
-              <div>Date {fmtDate(inv.date)}</div>
-              <div>Due {fmtDate(inv.dueDate)}</div>
-              {deal && <div>Deal {deal.code}</div>}
-              {listing && <div className="truncate">{listing.title}</div>}
-              {inv.taxInvoice && <div className="font-mono text-xs">Faktur {inv.taxInvoice.number}</div>}
-            </LetterBlock>
-          </div>
-
-          <table className="mt-6 w-full table-fixed text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-muted">
-                <th className="py-2 pr-3 font-semibold">Description</th>
-                <th className="hidden w-14 py-2 pl-3 text-right font-semibold sm:table-cell print:table-cell">Qty</th>
-                <th className="hidden w-32 py-2 pl-3 text-right font-semibold sm:table-cell print:table-cell">Unit price</th>
-                <th className="w-32 py-2 pl-3 text-right font-semibold">Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {inv.lines.map((l) => (
-                <tr key={l.id}>
-                  <td className="break-words py-2.5 pr-3">
-                    {l.description}
-                    <div className="text-xs text-muted sm:hidden print:hidden">
-                      {l.qty} × {fmtIdr(l.unitPrice)}
-                    </div>
-                  </td>
-                  <td className="hidden py-2.5 pl-3 text-right tabular-nums sm:table-cell print:table-cell">{l.qty}</td>
-                  <td className="hidden py-2.5 pl-3 text-right sm:table-cell print:table-cell">
-                    <Money value={l.unitPrice} />
-                  </td>
-                  <td className="py-2.5 pl-3 text-right">
-                    <Money value={l.qty * l.unitPrice} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="mt-4 flex border-t border-border pt-4">
-            <TotalsBlock totals={totals} taxPct={inv.taxPct} showPaid={inv.status === 'issued'} />
-          </div>
-          {inv.memo && <p className="mt-4 text-sm text-muted">{inv.memo}</p>}
-
-          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1fr)_20rem] print:block">
+        <InvoicePaper
+          inv={inv}
+          number={inv.code}
+          overdue={settle === 'overdue'}
+          stamp={
+            inv.status !== 'issued' ? (
+              <Stamp tone={inv.status === 'void' ? 'accent' : 'warning'}>{INVOICE_STATUS_LABEL[inv.status]}</Stamp>
+            ) : settle === 'paid' ? (
+              <Stamp tone="success">Paid</Stamp>
+            ) : undefined
+          }
+        >
+          <div className="grid grid-cols-1 gap-4 border-t border-border px-5 py-5 sm:grid-cols-2 sm:px-8">
             <LetterBlock title="Pay to">
               {bank ? (
                 <>
@@ -939,7 +1028,7 @@ export function InvoiceDetailPage() {
               <Signature role={`For ${state.company.name}`} name={actorName(inv.createdBy)} />
             </div>
           </div>
-        </Card>
+        </InvoicePaper>
 
         <div className="space-y-4 print:hidden">
           <Card>

@@ -31,7 +31,7 @@ The app follows the WIT house style (`wit-code-agent`): grey canvas, borderless 
 - The reducer writes a field-level audit entry for every change to a watched collection (`packages/fixtures/src/audit.ts`). A new collection joins the audit by adding its key to `COLLECTIONS`.
 - CRM and sales rules live in `packages/fixtures/src/crm.ts`: a quotation above 5% discount needs `deal.approve`; a deal is won only after the buyer accepts a quotation; accepting moves an earlier deal to the booking stage. Every new inquiry creates or links a contact by phone and runs the enabled automations.
 - The public site may use the Fraunces display serif (`font-display`) for headings; the console stays DM Sans only. Landing photos load from `apps/web/public/landing/` with designed gradient fallbacks until real photos exist.
-- Shared page pieces: `components/Letter.tsx` for printable letters (quotation, receipt, commission statement), `components/NoAccess.tsx` for pages that need a permission beyond the section's, `components/SectionNav.tsx` for section tabs, `components/badges.tsx` for status and stage badges, `lib/price.ts` for price inputs.
+- Shared page pieces: `components/Letter.tsx` for printable letters (receipt, commission statement), `components/DocumentSheet.tsx` for the quotation and invoice paper that doubles as the form, `components/NoAccess.tsx` for pages that need a permission beyond the section's, `components/SectionNav.tsx` for section tabs, `components/badges.tsx` for status and stage badges, `lib/price.ts` for price inputs.
 - The last active admin cannot be demoted or disabled; system roles, the head office and roles or branches still in use cannot be deleted.
 
 ## Swapping Jessy for an LLM

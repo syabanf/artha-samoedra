@@ -63,6 +63,7 @@ export function DocumentLinesEditor({
   taxPct,
   accountTypes,
   error,
+  showTotals = true,
 }: {
   lines: DocumentLine[]
   onChange: (lines: DocumentLine[]) => void
@@ -70,9 +71,10 @@ export function DocumentLinesEditor({
   /** ['expense'] or ['asset', 'expense'] on bills, ['revenue'] on invoices. */
   accountTypes: GlAccountType[]
   error?: string
+  /** False when the page shows its own summary; Add line then sits on the right. */
+  showTotals?: boolean
 }) {
   const set = (id: string, patch: Partial<DocumentLine>) => onChange(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)))
-  const totals = documentTotals({ lines, taxPct, paid: [] })
   return (
     <div className="space-y-3">
       <ul className="space-y-3">
@@ -91,12 +93,12 @@ export function DocumentLinesEditor({
           </li>
         ))}
       </ul>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className={cn('flex flex-wrap items-start gap-3', showTotals ? 'justify-between' : 'justify-end')}>
         <Button variant="outline" size="sm" onClick={() => onChange([...lines, blankLine()])}>
           <Plus />
           Add line
         </Button>
-        <TotalsBlock totals={totals} taxPct={taxPct} />
+        {showTotals && <TotalsBlock totals={documentTotals({ lines, taxPct, paid: [] })} taxPct={taxPct} />}
       </div>
       {error && <p className="text-sm text-danger">{error}</p>}
     </div>

@@ -8,9 +8,11 @@ import {
   fmtIdrShort,
   fmtPercent,
   fromDateInput,
+  isOpenDeal,
   needsApproval,
   netPrice,
   newId,
+  nextQuotationCode,
   nowIso,
   toDateInput,
 } from '@artha/fixtures'
@@ -25,8 +27,6 @@ import {
   Chip,
   ChipRow,
   DataTable,
-  Dialog,
-  DialogFooter,
   EmptyState,
   FormField,
   Input,
@@ -35,6 +35,7 @@ import {
   StatCard,
   Textarea,
   type BadgeVariant,
+  cn,
   type Column,
 } from '@artha/ui'
 import {
@@ -45,12 +46,13 @@ import {
   type Quotation,
   type QuotationStatus,
 } from '@artha/types'
-import { CircleCheck, CircleX, FileText, Printer, Search, Send, ShieldCheck, X } from 'lucide-react'
-import { useState } from 'react'
+import { CircleCheck, CircleX, FileText, Percent, Plus, Printer, RotateCcw, Search, Send, ShieldCheck, X } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { useAuth, useUser } from '../../auth/auth'
 import { BackButton } from '../../components/BackButton'
-import { LetterBlock, LetterHead, LetterRow, Signature } from '../../components/Letter'
+import { DocBottom, DocField, DocFields, DocInput, DocNotes, DocSection, DocSelect, DocSummary, DocumentHead, DocumentPickers, DocumentSheet } from '../../components/DocumentSheet'
+import { Signature } from '../../components/Letter'
 import { CodeLink, paths } from '../../components/links'
 import { NoAccess } from '../../components/NoAccess'
 import { priceInput, readPrice } from '../../lib/price'
@@ -75,7 +77,6 @@ export const QuotationStatusBadge = ({ status }: { status: QuotationStatus }) =>
   <Badge variant={STATUS_VARIANT[status]}>{QUOTATION_STATUS_LABEL[status]}</Badge>
 )
 
-/** Reads 2.5 B, 850 M or plain digits. */
 
 /** Draft, approval when the discount needs it, approved, sent, accepted. */
 export function QuotationLifecycle({ q }: { q: Quotation }) {
@@ -93,12 +94,11 @@ export function QuotationLifecycle({ q }: { q: Quotation }) {
   )
 }
 
-/** The next step for a quotation, shown only to roles that may take it. */
-export function QuotationActions({ q, onRevise }: { q: Quotation; onRevise?: () => void }) {
+/** The next step for a quotation, shown only to roles that may take it. `revise` adds a link to the revision page. */
+export function QuotationActions({ q, revise }: { q: Quotation; revise?: boolean }) {
   const { can } = useAuth()
   const act = useAct()
   const manage = can('deal.manage')
-  const open = q.status !== 'accepted' && q.status !== 'rejected' && q.status !== 'superseded'
   return (
     <div className="flex flex-wrap gap-2 print:hidden">
       {manage && q.status === 'draft' && (
@@ -140,140 +140,346 @@ export function QuotationActions({ q, onRevise }: { q: Quotation; onRevise?: () 
           </Button>
         </>
       )}
-      {manage && open && onRevise && (
-        <Button size="sm" variant="ghost" onClick={onRevise}>
-          Revise
+      {manage && revise && REVISABLE.includes(q.status) && (
+        <Button size="sm" variant="ghost" asChild>
+          <Link to={paths.quotationRevise(q.id)}>Revise</Link>
         </Button>
       )}
     </div>
   )
 }
 
-// ---------------------------------------------------------------- quotation dialog
+// ---------------------------------------------------------------- the quotation as a document
 
-export function QuotationDialog({
-  open,
-  onOpenChange,
+const REVISABLE: QuotationStatus[] = ['draft', 'pending_approval', 'approved', 'sent']
+const PLANS = Object.keys(PAYMENT_PLAN_LABEL) as PaymentPlan[]
+
+type Terms = Pick<Quotation, 'listPrice' | 'discountPct' | 'bookingFee' | 'paymentPlan' | 'validUntil' | 'notes'>
+interface QuoteDraft {
+  listPrice: string
+  discountPct: string
+  bookingFee: string
+  paymentPlan: PaymentPlan
+  validUntil: string
+  notes: string
+}
+
+/** The inputs a paper shows in place of text; errors are already held back until the first submit. */
+interface QuoteEdit {
+  f: QuoteDraft
+  set: (k: keyof QuoteDraft) => (e: { target: { value: string } }) => void
+  errors: Partial<Record<keyof QuoteDraft | 'deal', string>>
+  onListingPrice: (price: number) => void
+}
+
+/** Letterhead, buyer and property rows, the property line and the price summary, as text or as inputs. */
+function QuotationPaper({
   deal,
-  revising,
+  number,
+  date,
+  terms,
+  edit,
+  children,
+  ...props
 }: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  deal: Deal
-  revising: Quotation | null
+  deal: Deal | undefined
+  number: string
+  date: string
+  terms: Terms
+  edit?: QuoteEdit
+  children?: ReactNode
+  id?: string
 }) {
+  const { state } = useAppState()
+  const buyer = state.contacts.find((c) => c.id === deal?.contactId)
+  const listing = state.listings.find((l) => l.id === deal?.listingId)
+  const owner = state.users.find((u) => u.id === deal?.ownerId)
+  const net = netPrice(terms)
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      size="lg"
-      title={revising ? `Revise ${revising.code}` : `New quotation for ${deal.code}`}
-      description={
-        revising
-          ? 'The revision becomes a new version and replaces every open version of this deal.'
-          : `A discount above ${APPROVAL_DISCOUNT_PCT}% needs a manager's approval before you can send it.`
-      }
-    >
-      <QuotationForm deal={deal} revising={revising} onDone={() => onOpenChange(false)} />
-    </Dialog>
+    <DocumentSheet {...props}>
+      <DocumentHead company={state.company} title="Quotation" number={number} />
+      <DocFields
+        left={
+          <>
+            <DocField label="Property">{listing?.title ?? deal?.title ?? '–'}</DocField>
+            <DocField label="Client" required={!!edit} error={edit?.errors.deal}>
+              {buyer?.name ?? (edit ? <span className="font-normal text-muted">Pick a deal above</span> : '–')}
+            </DocField>
+            <DocField label="Agent">{owner?.name ?? '–'}</DocField>
+            <DocField label="Phone">{buyer?.phone || '–'}</DocField>
+            <DocField label="Email">{buyer?.email || '–'}</DocField>
+          </>
+        }
+        right={
+          <>
+            <DocField label="Date">{fmtDateLong(date)}</DocField>
+            <DocField label="Valid until" required={!!edit} error={edit?.errors.validUntil}>
+              {edit ? <DocInput type="date" value={edit.f.validUntil} onChange={edit.set('validUntil')} /> : fmtDateLong(terms.validUntil)}
+            </DocField>
+            <DocField label="Payment plan" required={!!edit}>
+              {edit ? (
+                <DocSelect value={edit.f.paymentPlan} onChange={edit.set('paymentPlan')}>
+                  {PLANS.map((p) => (
+                    <option key={p} value={p}>
+                      {PAYMENT_PLAN_LABEL[p]}
+                    </option>
+                  ))}
+                </DocSelect>
+              ) : (
+                PAYMENT_PLAN_LABEL[terms.paymentPlan]
+              )}
+            </DocField>
+            <DocField label="Booking fee" error={edit?.errors.bookingFee}>
+              {edit ? <DocInput value={edit.f.bookingFee} onChange={edit.set('bookingFee')} placeholder="50 million" /> : fmtIdr(terms.bookingFee)}
+            </DocField>
+            <DocField label="Location">{listing?.address ?? '–'}</DocField>
+            <DocField label="Deal">{deal ? <CodeLink to={paths.deal(deal.id)} code={deal.code} /> : '–'}</DocField>
+          </>
+        }
+      />
+
+      <DocSection
+        title="Property price"
+        actions={
+          edit &&
+          listing && (
+            <Button type="button" variant="outline" size="sm" onClick={() => edit.onListingPrice(listing.price)}>
+              <RotateCcw />
+              Use listing price
+            </Button>
+          )
+        }
+      >
+        <div className="hidden grid-cols-[minmax(0,1fr)_10rem_6rem_10rem] gap-3 border-b border-border pb-2 text-xs font-semibold text-muted sm:grid print:grid">
+          <span>Description</span>
+          <span className="text-right">List price</span>
+          <span className="text-right">Discount</span>
+          <span className="text-right">Price after discount</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 py-3 sm:grid-cols-[minmax(0,1fr)_10rem_6rem_10rem] sm:items-start print:grid-cols-[minmax(0,1fr)_10rem_6rem_10rem]">
+          <div className="col-span-2 min-w-0 text-sm sm:col-span-1 print:col-span-1">
+            <div className="font-semibold">{listing?.title ?? deal?.title ?? 'No property yet'}</div>
+            {listing && <div className="font-mono text-xs text-muted">{listing.code}</div>}
+          </div>
+          <LineCell label="List price">
+            {edit ? (
+              <>
+                <DocInput aria-label="List price" aria-invalid={!!edit.errors.listPrice || undefined} value={edit.f.listPrice} onChange={edit.set('listPrice')} placeholder="2.5 B" className="text-right" />
+                <div className="mt-1 text-right text-xs text-muted">{terms.listPrice ? fmtIdr(terms.listPrice) : 'For example 2.5 B'}</div>
+              </>
+            ) : (
+              fmtIdr(terms.listPrice)
+            )}
+          </LineCell>
+          <LineCell label="Discount">
+            {edit ? (
+              <div className="flex items-baseline gap-1">
+                <DocInput aria-label="Discount in percent" aria-invalid={!!edit.errors.discountPct || undefined} inputMode="decimal" value={edit.f.discountPct} onChange={edit.set('discountPct')} className="text-right" />
+                <span className="text-sm text-muted">%</span>
+              </div>
+            ) : (
+              fmtPercent(terms.discountPct)
+            )}
+          </LineCell>
+          <LineCell label="Price after discount" className="col-span-2 sm:col-span-1 print:col-span-1">
+            <span className="font-semibold">{fmtIdr(net)}</span>
+          </LineCell>
+        </div>
+        {edit && (edit.errors.listPrice || edit.errors.discountPct) && (
+          <p className="text-sm text-danger">{[edit.errors.listPrice, edit.errors.discountPct].filter(Boolean).join(' ')}</p>
+        )}
+      </DocSection>
+
+      <DocBottom
+        notes={
+          <DocNotes label="Notes for this quotation">
+            {edit ? (
+              <Textarea aria-label="Notes for this quotation" className="min-h-24" value={edit.f.notes} onChange={edit.set('notes')} placeholder="Printed on the letter, for example what the price includes" />
+            ) : (
+              <p className="whitespace-pre-line text-sm">{terms.notes || <span className="text-muted">No notes.</span>}</p>
+            )}
+          </DocNotes>
+        }
+        summary={
+          <DocSummary
+            rows={[
+              { label: 'List price', value: fmtIdr(terms.listPrice) },
+              { label: <><Percent className="size-4" />Discount {fmtPercent(terms.discountPct)}</>, value: `- ${fmtIdr(terms.listPrice - net)}`, tone: 'warning' },
+              { label: 'Price after discount', value: fmtIdr(net), tone: 'total' },
+              { label: 'Booking fee due on signing', value: fmtIdr(terms.bookingFee), tone: 'info' },
+              { label: 'Balance after booking fee', value: fmtIdr(net - terms.bookingFee) },
+            ]}
+          />
+        }
+      />
+      {children}
+    </DocumentSheet>
   )
 }
 
-function QuotationForm({ deal, revising, onDone }: { deal: Deal; revising: Quotation | null; onDone: () => void }) {
+/** One cell of the property line, with its own label on phones where the header row is hidden. */
+const LineCell = ({ label, className, children }: { label: string; className?: string; children: ReactNode }) => (
+  <div className={cn('min-w-0 text-sm tabular-nums sm:text-right print:text-right', className)}>
+    <div className="text-xs text-muted sm:hidden print:hidden">{label}</div>
+    {children}
+  </div>
+)
+
+// ---------------------------------------------------------------- editor: new quotation and revision
+
+export function QuotationEditorPage() {
+  const { id } = useParams()
+  const { state } = useAppState()
+  const { can } = useAuth()
+  const revising = id ? state.quotations.find((x) => x.id === id) : undefined
+  if (!can('deal.manage')) return <NoAccess action={<BackButton fallback={paths.quotations} />} />
+  if (id && !revising) {
+    return (
+      <Card>
+        <EmptyState title="Quotation not found" description="This quotation may have been removed." action={<BackButton fallback={paths.quotations} />} />
+      </Card>
+    )
+  }
+  if (revising && !REVISABLE.includes(revising.status)) {
+    return (
+      <Card>
+        <EmptyState
+          title="Only an open quotation can be revised"
+          description={`${revising.code} is ${QUOTATION_STATUS_LABEL[revising.status].toLowerCase()}.`}
+          action={
+            <Button variant="outline" asChild>
+              <Link to={paths.quotation(revising.id)}>Open quotation</Link>
+            </Button>
+          }
+        />
+      </Card>
+    )
+  }
+  return <QuotationEditor key={id ?? 'new'} revising={revising} />
+}
+
+function QuotationEditor({ revising }: { revising?: Quotation }) {
   const { state } = useAppState()
   const user = useUser()
   const act = useAct()
+  const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const deal = state.deals.find((d) => d.id === (revising?.dealId ?? params.get('deal')))
+  const branchOf = (d: Deal) => state.users.find((u) => u.id === d.ownerId)?.branchId
+  const [branchId, setBranchId] = useState(() => (deal && branchOf(deal)) ?? '')
+  const deals = state.deals.filter((d) => d.id === deal?.id || (isOpenDeal(state, d) && (!branchId || branchOf(d) === branchId)))
+  const listingPrice = (d: Deal | undefined) => state.listings.find((l) => l.id === d?.listingId)?.price ?? d?.value ?? 0
   const [tried, setTried] = useState(false)
-  const listing = state.listings.find((l) => l.id === deal.listingId)
-  const [f, setF] = useState({
-    listPrice: priceInput(revising?.listPrice ?? listing?.price ?? deal.value),
+  const [f, setF] = useState<QuoteDraft>({
+    listPrice: priceInput(revising?.listPrice ?? listingPrice(deal)),
     discountPct: String(revising?.discountPct ?? 0),
     bookingFee: priceInput(revising?.bookingFee ?? 50_000_000),
-    paymentPlan: revising?.paymentPlan ?? ('cash' as PaymentPlan),
+    paymentPlan: revising?.paymentPlan ?? 'cash',
     validUntil: toDateInput(addDays(nowIso(), 14)),
     notes: revising?.notes ?? '',
   })
-  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value })
-  const listPrice = readPrice(f.listPrice) ?? 0
-  const discountPct = Number(f.discountPct)
-  const bookingFee = readPrice(f.bookingFee) ?? 0
-  const net = netPrice({ listPrice, discountPct })
-  const errors = {
-    listPrice: listPrice > 0 ? null : 'Enter the list price, for example 2.5 B.',
-    discountPct: f.discountPct.trim() !== '' && discountPct >= 0 && discountPct <= 30 ? null : 'Discount must be between 0% and 30%.',
-    bookingFee: bookingFee < net ? null : 'The booking fee must be below the net price.',
-    validUntil: f.validUntil && fromDateInput(f.validUntil) > nowIso() ? null : 'Pick a date after today.',
+  const set = (k: keyof QuoteDraft) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value })
+  const terms: Terms = {
+    listPrice: readPrice(f.listPrice) ?? 0,
+    discountPct: Number(f.discountPct),
+    bookingFee: readPrice(f.bookingFee) ?? 0,
+    paymentPlan: f.paymentPlan,
+    validUntil: f.validUntil ? fromDateInput(f.validUntil) : '',
+    notes: f.notes.trim(),
   }
-  const show = (m: string | null) => (tried ? (m ?? undefined) : undefined)
+  const errors = {
+    deal: deal ? null : 'Pick the deal this quotation is for.',
+    listPrice: terms.listPrice > 0 ? null : 'Enter the list price, for example 2.5 B.',
+    discountPct: f.discountPct.trim() !== '' && terms.discountPct >= 0 && terms.discountPct <= 30 ? null : 'Discount must be between 0% and 30%.',
+    bookingFee: terms.bookingFee < netPrice(terms) ? null : 'The booking fee must be below the price after discount.',
+    validUntil: terms.validUntil && terms.validUntil > nowIso() ? null : 'Pick a date after today.',
+  }
+  const shown = Object.fromEntries(Object.entries(errors).map(([k, m]) => [k, tried && m ? m : undefined])) as QuoteEdit['errors']
+
+  const pickDeal = (dealId: string) => {
+    setParams(dealId ? { deal: dealId } : {}, { replace: true })
+    setF({ ...f, listPrice: priceInput(listingPrice(state.deals.find((d) => d.id === dealId))) })
+  }
+  const lockedTitle = revising ? `A revision stays on ${deal?.code ?? 'its deal'}.` : undefined
+  const back = revising ? paths.quotation(revising.id) : deal ? paths.deal(deal.id) : paths.quotations
 
   return (
     <form
       noValidate
+      className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault()
         setTried(true)
-        if (Object.values(errors).some(Boolean)) return
+        if (!deal || Object.values(errors).some(Boolean)) return
         const quotation: Quotation = {
+          ...terms,
           id: newId('quo'),
           code: '',
           dealId: deal.id,
           version: 0,
-          listPrice,
-          discountPct,
-          bookingFee,
-          paymentPlan: f.paymentPlan,
-          validUntil: fromDateInput(f.validUntil),
-          notes: f.notes.trim(),
           status: 'draft',
           approvedBy: null,
           createdBy: user.id,
           createdAt: nowIso(),
           sentAt: null,
         }
-        if (act({ type: 'quotations/create', quotation }, revising ? 'Revision saved as a draft' : 'Quotation saved as a draft', deal.code)) onDone()
+        if (act({ type: 'quotations/create', quotation }, revising ? 'Revision saved as a draft' : 'Quotation saved as a draft', deal.code)) {
+          navigate(paths.quotation(quotation.id), { replace: true })
+        }
       }}
     >
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <FormField label="List price" required error={show(errors.listPrice)} hint={listPrice ? fmtIdr(listPrice) : 'For example 2.5 B or 850 M'}>
-          <Input value={f.listPrice} onChange={set('listPrice')} placeholder="2.5 B" />
-        </FormField>
-        <FormField label="Discount" required error={show(errors.discountPct)} hint="In percent, up to 30">
-          <Input inputMode="decimal" value={f.discountPct} onChange={set('discountPct')} />
-        </FormField>
-        <FormField label="Booking fee" error={show(errors.bookingFee)} hint={bookingFee ? fmtIdr(bookingFee) : 'Paid to hold the unit'}>
-          <Input value={f.bookingFee} onChange={set('bookingFee')} placeholder="50 M" />
-        </FormField>
-        <FormField label="Payment plan" required>
-          <NativeSelect value={f.paymentPlan} onChange={set('paymentPlan')}>
-            {(Object.keys(PAYMENT_PLAN_LABEL) as PaymentPlan[]).map((p) => (
-              <option key={p} value={p}>
-                {PAYMENT_PLAN_LABEL[p]}
+      <BackButton fallback={back} />
+      <PageHeader
+        title={revising ? `Revise ${revising.code}` : 'New quotation'}
+        description={
+          revising
+            ? 'The revision becomes a new version and replaces every open version of this deal.'
+            : `Fill in the letter as the buyer will read it. A discount above ${APPROVAL_DISCOUNT_PCT}% needs a manager's approval before you can send it.`
+        }
+      />
+      <DocumentPickers>
+        <FormField label="Deal" required error={shown.deal} className="sm:col-span-2">
+          <NativeSelect value={deal?.id ?? ''} onChange={(e) => pickDeal(e.target.value)} disabled={!!revising} title={lockedTitle}>
+            <option value="">Pick an open deal</option>
+            {deals.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.code} · {d.title}
               </option>
             ))}
           </NativeSelect>
         </FormField>
-        <FormField label="Valid until" required error={show(errors.validUntil)}>
-          <Input type="date" value={f.validUntil} onChange={set('validUntil')} />
+        <FormField label="Branch" hint={revising ? undefined : 'Narrows the deals to agents of this branch'}>
+          <NativeSelect value={branchId} onChange={(e) => setBranchId(e.target.value)} disabled={!!revising} title={lockedTitle}>
+            <option value="">All branches</option>
+            {state.branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </NativeSelect>
         </FormField>
-        <div className="flex flex-col justify-end rounded-2xl bg-surface-2 p-3">
-          <div className="text-xs text-muted">Net price</div>
-          <div className="text-lg font-bold tabular-nums">{fmtIdr(net)}</div>
-        </div>
-        <FormField label="Notes" hint="Optional, printed on the letter" className="sm:col-span-2">
-          <Textarea className="min-h-20" value={f.notes} onChange={set('notes')} />
-        </FormField>
-      </div>
-      {needsApproval({ discountPct }) && (
-        <Banner tone="warning" title="Needs approval" className="mt-4">
+      </DocumentPickers>
+
+      <QuotationPaper
+        deal={deal}
+        number={nextQuotationCode(state)}
+        date={nowIso()}
+        terms={terms}
+        edit={{ f, set, errors: shown, onListingPrice: (price) => setF({ ...f, listPrice: priceInput(price) }) }}
+      />
+
+      {needsApproval(terms) && (
+        <Banner tone="warning" title="Needs approval" className="print:hidden">
           A discount above {APPROVAL_DISCOUNT_PCT}% goes to a manager before it can be sent.
         </Banner>
       )}
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onDone}>
+      <div className="flex flex-wrap justify-end gap-2 print:hidden">
+        <Button type="button" variant="outline" onClick={() => navigate(back)}>
           Cancel
         </Button>
         <Button type="submit">{revising ? 'Save revision' : 'Save draft'}</Button>
-      </DialogFooter>
+      </div>
     </form>
   )
 }
@@ -282,6 +488,7 @@ function QuotationForm({ deal, revising, onDone }: { deal: Deal; revising: Quota
 
 export function QuotationsPage() {
   const { state } = useAppState()
+  const { can } = useAuth()
   const now = useNow()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -341,16 +548,26 @@ export function QuotationsPage() {
         description="Price offers and booking letters for each deal. A revision replaces the open version."
         className="[&>div:last-child]:w-full sm:[&>div:last-child]:w-auto"
         actions={
-          <Input
-            variant="pill"
-            icon={<Search />}
-            aria-label="Search quotations"
-            placeholder="Code, deal or buyer"
-            value={q}
-            onChange={(e) => set('q', e.target.value)}
-            className="min-w-0 flex-1 sm:w-72 sm:flex-none"
-            right={q ? <Button variant="ghost" size="icon-sm" aria-label="Clear search" onClick={() => set('q', null)}><X /></Button> : undefined}
-          />
+          <>
+            <Input
+              variant="pill"
+              icon={<Search />}
+              aria-label="Search quotations"
+              placeholder="Code, deal or buyer"
+              value={q}
+              onChange={(e) => set('q', e.target.value)}
+              className="min-w-0 flex-1 sm:w-72 sm:flex-none"
+              right={q ? <Button variant="ghost" size="icon-sm" aria-label="Clear search" onClick={() => set('q', null)}><X /></Button> : undefined}
+            />
+            {can('deal.manage') && (
+              <Button asChild>
+                <Link to={paths.quotationNew()}>
+                  <Plus />
+                  New quotation
+                </Link>
+              </Button>
+            )}
+          </>
         }
       />
       <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
@@ -393,7 +610,7 @@ export function QuotationsPage() {
             filters ? (
               <EmptyState compact title="No matching quotations" description="Change the search or clear the filters." action={<Button variant="outline" size="sm" onClick={() => setParams({}, { replace: true })}>Clear filters</Button>} />
             ) : (
-              <EmptyState compact title="No quotations yet" description="Create one from a deal page." />
+              <EmptyState compact title="No quotations yet" description="Start one from a deal page or with New quotation." />
             )
           }
         />
@@ -407,7 +624,6 @@ export function QuotationsPage() {
 export function QuotationDetailPage() {
   const { id } = useParams()
   const { state, actorName } = useScoped()
-  const [revising, setRevising] = useState(false)
   const q = state.quotations.find((x) => x.id === id)
   if (!q) {
     return (
@@ -418,10 +634,6 @@ export function QuotationDetailPage() {
   }
   const deal = state.deals.find((d) => d.id === q.dealId)
   const buyer = state.contacts.find((c) => c.id === deal?.contactId)
-  const listing = state.listings.find((l) => l.id === deal?.listingId)
-  const company = state.company
-  const net = netPrice(q)
-  const signer = actorName(q.approvedBy ?? q.createdBy)
 
   return (
     <div className="space-y-4">
@@ -438,7 +650,7 @@ export function QuotationDetailPage() {
           </div>
         </div>
         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-          {deal && <QuotationActions q={q} onRevise={() => setRevising(true)} />}
+          {deal && <QuotationActions q={q} revise />}
           <Button variant="outline" onClick={() => window.print()}>
             <Printer />
             Print
@@ -449,62 +661,20 @@ export function QuotationDetailPage() {
         <QuotationLifecycle q={q} />
       </Card>
 
-      <Card id="booking-letter" className="mx-auto max-w-3xl p-6 sm:p-10 print:max-w-none print:border-0 print:p-0">
-        <LetterHead company={company} />
-        <div className="mt-6 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="text-lg font-bold">Price quotation and booking letter</div>
-            <div className="font-mono text-xs text-muted">
-              {q.code} · version {q.version}
-            </div>
+      <QuotationPaper id="booking-letter" deal={deal} number={`${q.code} v${q.version}`} date={q.createdAt} terms={q}>
+        <div className="border-t border-border px-5 py-5 sm:px-8">
+          <p className="text-xs text-muted">
+            The booking fee holds the property for the buyer until the valid-until date and counts toward the price after discount. This offer lapses after that date.
+          </p>
+          <div className="mt-10 grid grid-cols-2 gap-8 text-sm">
+            <Signature role="Buyer" name={buyer?.name ?? ''} />
+            <Signature role={`For ${state.company.name}`} name={actorName(q.approvedBy ?? q.createdBy)} />
           </div>
-          <div className="text-sm text-muted">{fmtDateLong(q.createdAt)}</div>
         </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <LetterBlock title="Buyer">
-            <div className="font-semibold">{buyer?.name ?? '–'}</div>
-            {buyer?.phone && <div>{buyer.phone}</div>}
-            {buyer?.email && <div>{buyer.email}</div>}
-          </LetterBlock>
-          <LetterBlock title="Property">
-            {listing ? (
-              <>
-                <div className="font-semibold">{listing.title}</div>
-                <div className="font-mono text-xs">{listing.code}</div>
-                <div>{listing.address}</div>
-              </>
-            ) : (
-              <div>{deal?.title ?? '–'}</div>
-            )}
-          </LetterBlock>
-        </div>
-
-        <dl className="mt-6 divide-y divide-border border-y border-border text-sm">
-          <LetterRow label="List price" value={fmtIdr(q.listPrice)} />
-          <LetterRow label={`Discount ${fmtPercent(q.discountPct)}`} value={`- ${fmtIdr(q.listPrice - net)}`} />
-          <LetterRow label="Net price" value={fmtIdr(net)} strong />
-          <LetterRow label="Booking fee" value={fmtIdr(q.bookingFee)} />
-          <LetterRow label="Balance after booking fee" value={fmtIdr(net - q.bookingFee)} />
-          <LetterRow label="Payment plan" value={PAYMENT_PLAN_LABEL[q.paymentPlan]} />
-          <LetterRow label="Valid until" value={fmtDateLong(q.validUntil)} />
-        </dl>
-
-        {q.notes && <p className="mt-4 whitespace-pre-line text-sm">{q.notes}</p>}
-        <p className="mt-4 text-xs text-muted">
-          The booking fee holds the property for the buyer until the valid-until date and counts toward the net price. This offer lapses after that date.
-        </p>
-
-        <div className="mt-12 grid grid-cols-2 gap-8 text-sm">
-          <Signature role="Buyer" name={buyer?.name ?? ''} />
-          <Signature role={`For ${company.name}`} name={signer} />
-        </div>
-      </Card>
-      {deal && <QuotationDialog open={revising} onOpenChange={setRevising} deal={deal} revising={q} />}
+      </QuotationPaper>
     </div>
   )
 }
-
 
 // ---------------------------------------------------------------- approvals
 

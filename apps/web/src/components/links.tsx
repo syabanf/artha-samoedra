@@ -39,6 +39,8 @@ export const paths = {
   deal: (id: string) => `/console/sales/deals/${id}`,
   quotations: '/console/sales/quotations',
   quotation: (id: string) => `/console/sales/quotations/${id}`,
+  quotationNew: (dealId?: string) => `/console/sales/quotations/new${dealId ? `?deal=${dealId}` : ''}`,
+  quotationRevise: (id: string) => `/console/sales/quotations/${id}/revise`,
   followUps: '/console/sales/follow-ups',
   forecast: '/console/sales/forecast',
   approvals: '/console/sales/approvals',

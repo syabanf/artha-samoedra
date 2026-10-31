@@ -41,7 +41,7 @@ import {
   Textarea,
   type Column,
 } from '@artha/ui'
-import { ACTIVITY_KIND_LABEL, type Activity, type Deal, type DealStage, type Quotation } from '@artha/types'
+import { ACTIVITY_KIND_LABEL, type Activity, type Deal, type DealStage } from '@artha/types'
 import { CalendarClock, CircleCheck, CircleX, Handshake, Pencil, Plus, Search, TrendingUp, Wallet, X } from 'lucide-react'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
@@ -54,7 +54,7 @@ import { DocumentsCard } from '../dataroom/DocumentsCard'
 import { useAct } from '../dialogs'
 import { priceInput, readPrice } from '../../lib/price'
 import { TaskDialog, TaskRow } from './FollowUpsPage'
-import { QuotationActions, QuotationDialog, QuotationLifecycle, QuotationStatusBadge } from './QuotationPages'
+import { QuotationActions, QuotationLifecycle, QuotationStatusBadge } from './QuotationPages'
 
 // ---------------------------------------------------------------- shared bits
 
@@ -451,7 +451,7 @@ export function DealsPage() {
 
 // ---------------------------------------------------------------- detail
 
-type Open = 'edit' | 'lost' | 'quote' | 'task' | null
+type Open = 'edit' | 'lost' | 'task' | null
 
 export function DealDetailPage() {
   const { id } = useParams()
@@ -460,7 +460,6 @@ export function DealDetailPage() {
   const act = useAct()
   const now = useNow()
   const [open, setOpen] = useState<Open>(null)
-  const [revising, setRevising] = useState<Quotation | null>(null)
   const d = state.deals.find((x) => x.id === id)
   if (!d) {
     return (
@@ -521,7 +520,7 @@ export function DealDetailPage() {
         <DealHero deal={d} stage={stage} steps={steps} />
         <DealFacts deal={d} now={now} />
       </div>
-      <QuotationsCard deal={d} onCreate={() => setOpen('quote')} onRevise={setRevising} />
+      <QuotationsCard deal={d} />
       <DocumentsCard dealId={d.id} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TasksCard deal={d} onAdd={() => setOpen('task')} />
@@ -531,8 +530,6 @@ export function DealDetailPage() {
 
       <DealDialog open={open === 'edit'} onOpenChange={closeTo} editing={d} />
       <LostDialog deal={open === 'lost' ? d : null} onOpenChange={closeTo} />
-      <QuotationDialog open={open === 'quote'} onOpenChange={closeTo} deal={d} revising={null} />
-      <QuotationDialog open={!!revising} onOpenChange={(v) => !v && setRevising(null)} deal={d} revising={revising} />
       <TaskDialog open={open === 'task'} onOpenChange={closeTo} presetRef={{ type: 'deal', id: d.id }} />
     </div>
   )
@@ -618,7 +615,7 @@ function DealFacts({ deal, now }: { deal: Deal; now: number }) {
   )
 }
 
-function QuotationsCard({ deal, onCreate, onRevise }: { deal: Deal; onCreate: () => void; onRevise: (q: Quotation) => void }) {
+function QuotationsCard({ deal }: { deal: Deal }) {
   const { state } = useAppState()
   const { can } = useAuth()
   const rows = state.quotations.filter((q) => q.dealId === deal.id).sort((a, b) => b.version - a.version)
@@ -629,9 +626,11 @@ function QuotationsCard({ deal, onCreate, onRevise }: { deal: Deal; onCreate: ()
         action={
           can('deal.manage') &&
           !closed && (
-            <Button variant="outline" size="sm" onClick={onCreate}>
-              <Plus />
-              New quotation
+            <Button variant="outline" size="sm" asChild>
+              <Link to={paths.quotationNew(deal.id)}>
+                <Plus />
+                New quotation
+              </Link>
             </Button>
           )
         }
@@ -654,7 +653,7 @@ function QuotationsCard({ deal, onCreate, onRevise }: { deal: Deal; onCreate: ()
                   List {fmtIdrShort(q.listPrice)}, discount {fmtPercent(q.discountPct)}, valid until {fmtDate(q.validUntil)}
                 </div>
               </div>
-              <QuotationActions q={q} onRevise={() => onRevise(q)} />
+              <QuotationActions q={q} revise />
             </div>
             <div className="mt-3">
               <QuotationLifecycle q={q} />

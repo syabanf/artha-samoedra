@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { FIXTURE_NOW } from './clock'
-import { contactByPhone, forecast, leadScore, runReport, segmentMembers } from './crm'
+import { contactByPhone, forecast, leadScore, nextQuotationCode, runReport, segmentMembers } from './crm'
 import { buildInquiry, blockerFor, reduce, seedState } from './store'
 import type { AppAction, AppState } from './store'
 
@@ -30,6 +30,7 @@ test('a discounted quotation needs approval, acceptance books the deal, won need
   assert.match(blockerFor(s, { type: 'deals/move', id: deal.id, stageId: 'stg-won' })!, /accept a quotation/)
   assert.equal(blockerFor(s, { type: 'deals/move', id: deal.id, stageId: 'stg-lost' }), 'Pick a lost reason.')
 
+  assert.equal(nextQuotationCode(s), 'QT-26-0106')
   s = run(s, { type: 'quotations/create', quotation: { id: 'quo-x', code: '', dealId: deal.id, version: 0, listPrice: 5_400_000_000, discountPct: 7, bookingFee: 25_000_000, paymentPlan: 'cash', validUntil: AT, notes: '', status: 'draft', approvedBy: null, createdBy: '', createdAt: AT, sentAt: null } }, 'usr-4')
   assert.equal(s.quotations[0].code, 'QT-26-0106')
   s = run(s, { type: 'quotations/submit', id: 'quo-x' }, 'usr-4')
