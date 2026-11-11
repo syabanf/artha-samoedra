@@ -58,17 +58,17 @@ test('the console Jessy turns report requests into figures and sends advice to a
   const ask = (convo: typeof admin, text: string) => consoleTurn(s, convo, text, AT)
 
   const sales = ask(admin, 'Laporan penjualan bulan ini')
-  assert.match(sales.replies[0].text, /^Sales report, this month:/)
+  assert.match(sales.replies[0].text, /^Laporan penjualan, bulan ini:/)
   assert.equal(sales.log?.purpose, 'Read report')
   const finance = ask(admin, 'laporan keuangan bulan lalu')
-  assert.match(finance.replies[0].text, /Finance report, last month:[\s\S]*Net income: Rp/)
-  assert.match(ask(admin, 'Ringkasan dashboard hari ini').replies[0].text, /^Dashboard summary:[\s\S]*Waiting for your approval/)
+  assert.match(finance.replies[0].text, /Laporan keuangan, bulan lalu:[\s\S]*Laba bersih: Rp/)
+  assert.match(ask(admin, 'Ringkasan dashboard hari ini').replies[0].text, /^Ringkasan dashboard:[\s\S]*Menunggu persetujuan Anda/)
 
   const dimas = s.users.find((u) => u.id === 'usr-2')!
   const sales_agent = consoleStart(s, { userId: dimas.id, permissions: s.roles.find((r) => r.id === dimas.roleId)!.permissions }).convo
-  assert.match(ask(sales_agent, 'laporan keuangan').replies[0].text, /your role cannot see finance figures/)
+  assert.match(ask(sales_agent, 'laporan keuangan').replies[0].text, /peran Anda tidak bisa melihat data keuangan/)
   const summary = ask(sales_agent, 'ringkasan dashboard').replies[0].text
-  assert.ok(!/Finance report/.test(summary), 'the summary leaves out modules the role cannot see')
+  assert.ok(!/Laporan keuangan/.test(summary), 'the summary leaves out modules the role cannot see')
 
   assert.equal(guardMessage('kasih tips jualan rumah dong', 'console'), 'advice')
   assert.equal(guardMessage('bagaimana cara meningkatkan penjualan?', 'console'), 'advice')

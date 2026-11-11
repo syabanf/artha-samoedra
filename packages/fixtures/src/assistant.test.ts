@@ -42,7 +42,7 @@ test('a read answers from the store and logs its tool through the gateway', () =
 test('stock and sales answers use the store helpers, in English or Indonesian', () => {
   const s0 = seedState()
   assert.match(talk(s0, 'usr-1', ['stok printer toner']).replies[0].text, /^Printer toner: 5 pcs on hand\./)
-  assert.match(talk(s0, 'usr-1', ['penjualan bulan ini']).replies[0].text, /^1 deal won this month, worth Rp 1\.82 B/)
+  assert.match(talk(s0, 'usr-1', ['penjualan bulan ini']).replies[0].text, /^1 deal closing bulan ini, senilai Rp 1,82 M/)
 })
 
 test('a read without the permission is refused politely and touches no tool', () => {

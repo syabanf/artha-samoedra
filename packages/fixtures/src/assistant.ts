@@ -1,21 +1,52 @@
 /**
- * Jessy in the console: a rule-based assistant for the signed-in member. Reads answer from the store and log the
- * gateway tool they used; changes are proposed first and only "Confirm" returns the store actions, which the chat
- * dispatches as the member. Same Turn and Engine shape as the buyer and partner chats in `jessy.ts`.
+ * Jessy in the console: a rule-based reporting assistant for the signed-in member. Reads answer from the store and log
+ * the gateway tool they used; changes are proposed first and only "Confirm" returns the store actions, which the chat
+ * dispatches as the member. She replies in the member's language and remembers the last report, so "bulan lalu?",
+ * "dibanding bulan lalu?" or "rinci" follow on from it. Every sentence lives in console-copy.ts.
  */
 import type { AttendanceState, Permission, TaskKind } from '@artha/types'
-import { CANDIDATE_STAGE_LABEL, PERMISSION_GROUPS, TASK_KIND_LABEL } from '@artha/types'
+import { CANDIDATE_STAGE_LABEL, PERMISSION_GROUPS } from '@artha/types'
 import { DAY, toMs } from './clock'
+import type { Lang, Metric, Period, Seen, Topic } from './console-copy'
+import {
+  ABILITIES,
+  amount,
+  compareAsk,
+  COPY,
+  dateOf,
+  dateTimeOf,
+  detectLang,
+  INTENT,
+  listJoin,
+  METRIC_TOPIC,
+  METRIC_WORDS,
+  money,
+  percent,
+  periodLabel,
+  periodWhen,
+  previousPeriod,
+  quick,
+  readPeriod,
+  samePeriod,
+  shortList,
+  TASK_KIND,
+  THIS_MONTH,
+  TOPIC_NAME,
+  TOPIC_WORDS,
+  WHAT,
+  withoutPeriod,
+} from './console-copy'
 import { stageOf } from './crm'
 import { daysLeft, exclusiveState } from './exclusives'
 import { agingBucket, customerName, incomeStatement, invoiceTotals, receivableAging } from './finance'
-import { fmtDate, fmtDateTime, fmtIdrShort, fmtTime, newId } from './format'
+import { fmtQty } from './purchasing'
+import { fmtTime, newId } from './format'
+import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
 import { attendanceState, buildCheckIn, currentEmployees, currentStep, employeeName, employeeOfUser, leaveBalance, requestsAwaiting, shiftOn, ymd } from './hr'
 import type { Engine, Reply, Turn } from './jessy'
-import { bestPrice, fmtQty, isPoLate, lowStock, nextPrCode, onHand, poTotals, prsAwaiting, prTotal, stockByWarehouse, valuation } from './purchasing'
+import { bestPrice, isPoLate, lowStock, nextPrCode, onHand, poTotals, prsAwaiting, prTotal, stockByWarehouse, valuation } from './purchasing'
 import type { AppAction, AppState } from './store'
 import { blockerFor, reduce } from './store'
-import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
 
 export interface ConsoleCtx {
   userId: string
@@ -44,33 +75,41 @@ export type ConsoleIntent =
   | { kind: 'announce'; title: string; body: string }
   | { kind: 'task'; dealId: string; title: string; taskKind: TaskKind; dueAt: string }
 
+/** The last report answered: its topic, its period and the ids of the rows behind it. */
+export interface ConsoleMemory {
+  topic: Topic
+  period: Period
+  rows: string[]
+}
+
 export interface ConsoleConvo {
   ctx: ConsoleCtx
   pending: ConsoleIntent | null
+  /** The member's language, from their last message that showed one. English until then. */
+  lang?: Lang
+  last?: ConsoleMemory | null
 }
 
 type ConsoleTurn = Turn<ConsoleConvo> & { replies: ConsoleReply[] }
 
-const CONFIRM = /^(confirm|yes|ya|ok|oke|okay|lanjut|setuju|do it|go ahead)\b/
-const CANCEL = /^(cancel|no|tidak|batal|jangan|stop)\b/
 const CODE = /\b([a-z]{2,3}-\d{2}-\d{4})\b/i
 
 const has = (t: string, pattern: RegExp) => pattern.test(t)
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 const firstName = (name: string) => name.split(' ')[0]
+const sum = <T>(rows: T[], value: (r: T) => number) => rows.reduce((n, r) => n + value(r), 0)
+const langOf = (c: ConsoleConvo): Lang => c.lang ?? 'en'
 
 const PERMISSION_LABEL = new Map<string, string>(PERMISSION_GROUPS.flatMap((g) => g.items.map(([key, label]) => [key, label] as [string, string])))
+const permLabel = (p: Permission) => PERMISSION_LABEL.get(p) ?? p
 
 const can = (ctx: ConsoleCtx, p: Permission) => ctx.permissions.includes(p)
 
-const refuse = (convo: ConsoleConvo, p: Permission, what: string, purpose: string): ConsoleTurn => ({
-  convo,
-  actions: [],
-  replies: [{ text: `Sorry, your role cannot see ${what}. It needs the "${PERMISSION_LABEL.get(p) ?? p}" permission. An admin can add it to your role.` }],
-  log: { purpose, tools: [] },
-})
-
 const say = (convo: ConsoleConvo, purpose: string, tools: string[], ...replies: ConsoleReply[]): ConsoleTurn => ({ convo, actions: [], replies, log: { purpose, tools } })
+
+const refuse = (convo: ConsoleConvo, p: Permission, what: Seen, purpose: string): ConsoleTurn => {
+  const lang = langOf(convo)
+  return say(convo, purpose, [], { text: COPY.refuseRead[lang](WHAT[lang][what], permLabel(p)) })
+}
 
 /** Lowercase words of 2+ letters or digits, without filler. */
 const STOP = new Set(['of', 'and', 'the', 'for', 'box', 'pack', 'set', 'pcs', 'to', 'in', 'on', 'a', 'an', 'ml', 'kg', 'gb', 'x', 'm'])
@@ -93,66 +132,547 @@ const bestMatch = <T>(rows: T[], name: (r: T) => string, text: string): T | null
   return best
 }
 
-// ---------------------------------------------------------------- start and help
-
-interface Ability {
-  needs: Permission | null
-  line: string
-  starter: string
-}
-
-const ABILITIES: Ability[] = [
-  { needs: null, line: 'A dashboard summary of everything your role can see', starter: 'Ringkasan dashboard hari ini' },
-  { needs: 'deal.view', line: 'A sales report: deals won, value, top agents and the open pipeline', starter: 'Laporan penjualan bulan ini' },
-  { needs: 'finance.view', line: 'A finance report: revenue, expenses, net income and overdue invoices', starter: 'Laporan keuangan bulan ini' },
-  { needs: 'purchase.view', line: 'Purchasing and stock reports: spend, open and late orders, stock value, low stock', starter: 'Laporan stok' },
-  { needs: 'hr.view', line: 'A people report: headcount, today\'s attendance and open requests', starter: 'Laporan SDM' },
-  { needs: 'listing.view', line: 'Listing and lead reports: listings by status, new inquiries and their stages', starter: 'Laporan listing' },
-  { needs: 'hr.view', line: 'Who is in, late or on leave today, by department', starter: 'Who is late today?' },
-  { needs: 'purchase.view', line: 'Low stock, and the stock of a named item', starter: 'What is low on stock?' },
-  { needs: 'deal.view', line: 'Won deals this month, last month or this quarter, and the pipeline by stage', starter: 'Sales this month' },
-  { needs: 'hr.view', line: 'A candidate\'s status by name', starter: 'Candidates in interview' },
-  { needs: null, line: 'What waits for your approval', starter: 'What waits for my approval?' },
-  { needs: 'finance.view', line: 'Overdue invoices', starter: 'Overdue invoices' },
-  { needs: 'exclusive.view', line: 'Exclusive rights that end soon', starter: 'Exclusive rights expiring soon' },
-  { needs: null, line: 'Your leave balance', starter: 'My leave balance' },
-  { needs: 'purchase.request', line: 'Raise a purchase request, such as "raise a PR for 10 A4 paper"', starter: 'Raise a PR for 10 A4 paper' },
-  { needs: null, line: 'Approve or reject a request that waits for you, by code or name', starter: '' },
-  { needs: null, line: 'Check you in for today', starter: 'Check me in' },
-  { needs: 'employee.manage', line: 'Post an announcement, such as "announce Office closed Friday: The office closes at noon."', starter: '' },
-  { needs: 'deal.manage', line: 'Add a follow-up task on a deal, such as "follow up DL-26-0041 tomorrow by call"', starter: '' },
-]
+// ---------------------------------------------------------------- start, help and small talk
 
 const abilitiesFor = (ctx: ConsoleCtx) => ABILITIES.filter((a) => !a.needs || can(ctx, a.needs))
-const starters = (ctx: ConsoleCtx) => abilitiesFor(ctx).map((a) => a.starter).filter(Boolean).slice(0, 4)
+const starters = (ctx: ConsoleCtx, lang: Lang) => abilitiesFor(ctx).flatMap((a) => (a.starter ? [a.starter[lang]] : [])).slice(0, 4)
+const memberName = (s: AppState, ctx: ConsoleCtx) => firstName(s.users.find((u) => u.id === ctx.userId)?.name ?? 'there')
 
-export const consoleStart = (s: AppState, ctx: ConsoleCtx): Turn<ConsoleConvo> => {
-  const name = s.users.find((u) => u.id === ctx.userId)?.name ?? 'there'
-  return {
-    convo: { ctx, pending: null },
-    actions: [],
-    replies: [
-      {
-        text: `Hi ${firstName(name)}, I am ${s.settings.agentName}. Ask me for a report or about any figure on your dashboard, and I answer from live data. I can also prepare a change for you to confirm. Type "help" to see everything.`,
-        quick: starters(ctx),
-      },
-    ],
-  }
-}
+export const consoleStart = (s: AppState, ctx: ConsoleCtx): Turn<ConsoleConvo> => ({
+  convo: { ctx, pending: null, lang: 'en', last: null },
+  actions: [],
+  replies: [{ text: COPY.start.en(memberName(s, ctx), s.settings.agentName), quick: starters(ctx, 'en') }],
+})
 
 const help = (convo: ConsoleConvo): ConsoleTurn => {
-  const mine = abilitiesFor(convo.ctx)
-  const text = ['Here is what I can do for your role. Reports first:', ...mine.map((a) => `• ${a.line}`), 'I always show a change first and run it only after you tap Confirm.'].join('\n')
-  return say(convo, 'Help', [], { text, quick: starters(convo.ctx) })
+  const lang = langOf(convo)
+  const lines = abilitiesFor(convo.ctx).map((a) => `• ${a.line[lang]}`)
+  return say(convo, 'Help', [], { text: [COPY.help[lang].head, ...lines, COPY.help[lang].foot].join('\n'), quick: starters(convo.ctx, lang) })
+}
+
+/** Hello, thanks, ok, bye, "who are you" and "apa kabar". A greeting in front of a question lets the question through. */
+const smallTalk = (s: AppState, c: ConsoleConvo, t: string, at: string): ConsoleTurn | { rest: string } => {
+  const lang = langOf(c)
+  const name = memberName(s, c.ctx)
+  const chat = (reply: ConsoleReply) => say(c, 'Small talk', [], reply)
+  if (INTENT.ok.test(t.replace(/[^a-z ]+/g, '').trim())) return chat({ text: COPY.ok[lang] })
+  if (INTENT.who.test(t)) return chat({ text: COPY.who[lang](s.settings.agentName, s.company.name), quick: starters(c.ctx, lang).slice(0, 3) })
+  if (INTENT.howAreYou.test(t)) return chat({ text: COPY.howAreYou[lang], quick: quick(lang, 'dashboard') })
+  const polite = t.match(INTENT.greeting) ?? t.match(INTENT.thanks) ?? t.match(INTENT.bye)
+  if (!polite) return { rest: t }
+  const rest = t.slice(polite[0].length).replace(/^[\s,.!?]+/, '')
+  if (rest.replace(INTENT.filler, '').replace(/[^a-z0-9]+/g, '')) return { rest }
+  if (INTENT.bye.test(polite[0])) return chat({ text: COPY.bye[lang](name) })
+  if (INTENT.thanks.test(polite[0])) return chat({ text: COPY.thanks[lang] })
+  return chat({ text: COPY.greet[lang](at, name), quick: starters(c.ctx, lang).slice(0, 3) })
+}
+
+// ---------------------------------------------------------------- periods
+
+const rangeOf = (p: Period, at: string) => {
+  const d = new Date(at)
+  const start = p.unit === 'month' ? d.getMonth() + p.offset : Math.floor(d.getMonth() / 3) * 3 + 3 * p.offset
+  const length = p.unit === 'month' ? 1 : 3
+  return { from: new Date(d.getFullYear(), start, 1), to: new Date(d.getFullYear(), start + length, 1) }
+}
+
+const labelOf = (p: Period, at: string, lang: Lang) => periodLabel(p, rangeOf(p, at).from, lang)
+/** The period inside a sentence: "bulan lalu", "pada Agustus 2026". */
+const whenOf = (p: Period, at: string, lang: Lang) => periodWhen(p, rangeOf(p, at).from, lang)
+const within = (iso: string | null | undefined, r: { from: Date; to: Date }) => !!iso && toMs(iso) >= r.from.getTime() && toMs(iso) < r.to.getTime()
+
+// ---------------------------------------------------------------- report topics
+
+/** One row behind a report, as the drill-down lists it and the ranking weighs it. */
+interface Row {
+  id: string
+  /** Code and name, as a ranking sentence names the row. */
+  label: string
+  line: string
+  amount?: number
+  /** Days late, for "paling lama telat". */
+  days?: number
+  owner?: string
+  link?: RecordLink
+}
+
+type Measure = keyof (typeof COPY.measure)['en']
+
+interface TopicDef {
+  needs: Permission
+  /** Reports for a month or quarter; the others show today's position. */
+  periodic: boolean
+  report: (s: AppState, p: Period, at: string, lang: Lang) => string[]
+  rows: (s: AppState, p: Period, at: string, lang: Lang) => Row[]
+  head: (s: AppState, rows: Row[], p: Period, at: string, lang: Lang) => string
+  /** Figures a comparison sets side by side. */
+  measures?: (s: AppState, p: Period, at: string) => [Measure, number][]
+  /** The ranking question that fits this topic's rows. */
+  rank?: 'topAgent' | 'longest' | 'largest'
+}
+
+const REPORT_ID: Record<Topic, string> = { sales: 'sales', finance: 'finance', inventory: 'purchasing', purchasing: 'purchasing', people: 'people', listings: 'listings', leads: 'leads' }
+const reportLink = (topic: Topic, lang: Lang): RecordLink => ({ kind: 'report', id: REPORT_ID[topic], label: COPY.reportLink[lang][topic] })
+
+const userName = (s: AppState, id: string) => s.users.find((u) => u.id === id)?.name ?? id
+const wonDeals = (s: AppState, p: Period, at: string) => s.deals.filter((d) => stageOf(s, d)?.kind === 'won' && within(d.closedAt, rangeOf(p, at)))
+const openDeals = (s: AppState) => s.deals.filter((d) => stageOf(s, d)?.kind === 'open')
+
+/** Won value per agent, best first. */
+const agentTotals = (rows: Row[]) => {
+  const by = new Map<string, { value: number; n: number }>()
+  for (const r of rows) {
+    const cur = by.get(r.owner!) ?? { value: 0, n: 0 }
+    by.set(r.owner!, { value: cur.value + (r.amount ?? 0), n: cur.n + 1 })
+  }
+  return [...by].map(([id, v]) => ({ id, ...v })).sort((a, b) => b.value - a.value)
+}
+
+const salesRows = (s: AppState, p: Period, at: string, lang: Lang): Row[] =>
+  wonDeals(s, p, at).map((d) => ({
+    id: d.id,
+    label: `${d.code} ${d.title}`,
+    line: COPY.row[lang].deal(d.code, d.title, money(d.value, lang), userName(s, d.ownerId)),
+    amount: d.value,
+    owner: d.ownerId,
+    link: { kind: 'deal', id: d.id, label: d.code },
+  }))
+
+/** Receivables past due as of `at`: everything after the first aging bucket ("not yet due"). */
+const pastDue = (s: AppState, at: string) => {
+  const aging = receivableAging(s, toMs(at))
+  return aging.total - aging.totals[0]
+}
+
+const overdueRows = (s: AppState, _p: Period, at: string, lang: Lang): Row[] => {
+  const now = toMs(at)
+  return s.invoices
+    .filter((i) => i.status === 'issued' && agingBucket(i.dueDate, now) > 0)
+    .map((i) => ({ i, balance: invoiceTotals(i).balance, days: Math.floor((now - toMs(i.dueDate)) / DAY) }))
+    .filter((r) => r.balance > 0)
+    .sort((a, b) => a.i.dueDate.localeCompare(b.i.dueDate))
+    .map(({ i, balance, days }) => ({
+      id: i.id,
+      label: `${i.code} · ${customerName(s, i)}`,
+      line: COPY.row[lang].invoice(i.code, customerName(s, i), money(balance, lang), days),
+      amount: balance,
+      days,
+      link: { kind: 'invoice', id: i.id, label: i.code },
+    }))
+}
+
+const lowRows = (s: AppState, _p: Period, _at: string, lang: Lang): Row[] =>
+  lowStock(s).map((r) => ({
+    id: r.item.id,
+    label: r.item.name,
+    line: COPY.row[lang].lowItem(r.item.name, fmtQty(s, r.item.id, r.qty), fmtQty(s, r.item.id, r.short)),
+    link: { kind: 'item', id: r.item.id, label: r.item.name },
+  }))
+
+const openOrders = (s: AppState) => s.purchaseOrders.filter((po) => po.status === 'sent' || po.status === 'partial')
+const pendingPrs = (s: AppState) => s.purchaseRequests.filter((r) => r.status === 'pending')
+
+const purchasingRows = (s: AppState, _p: Period, at: string, lang: Lang): Row[] => {
+  const now = toMs(at)
+  const orders = openOrders(s).map((po): Row => {
+    const late = isPoLate(po, now)
+    const vendor = s.vendors.find((v) => v.id === po.vendorId)?.name ?? '-'
+    const total = poTotals(po).total
+    return {
+      id: po.id,
+      label: `${po.code} · ${vendor}`,
+      line: COPY.row[lang].po(po.code, vendor, money(total, lang), late, dateOf(po.expectedDate, lang)),
+      amount: total,
+      days: late ? Math.floor((now - toMs(po.expectedDate)) / DAY) : undefined,
+    }
+  })
+  const requests = pendingPrs(s).map((r): Row => ({
+    id: r.id,
+    label: `${r.code} · ${employeeName(s, r.requesterId)}`,
+    line: COPY.row[lang].pr(r.code, employeeName(s, r.requesterId), money(prTotal(r), lang)),
+    amount: prTotal(r),
+    link: { kind: 'pr', id: r.id, label: r.code },
+  }))
+  return [...orders, ...requests]
+}
+
+/** "cuti 2 hari mulai 3 Nov 2026", "4 h overtime" or "loan of Rp 5 M". */
+const requestWhat = (r: AppState['hrRequests'][number], lang: Lang) =>
+  r.leave ? COPY.row[lang].leave(r.leave.days, dateOf(r.leave.from, lang)) : r.overtime ? COPY.row[lang].overtime(r.overtime.hours) : COPY.row[lang].loan(money(r.loan?.amount ?? 0, lang))
+
+const peopleRows = (s: AppState, _p: Period, _at: string, lang: Lang): Row[] =>
+  s.hrRequests
+    .filter((r) => r.status === 'pending')
+    .map((r) => ({
+      id: r.id,
+      label: `${r.code} · ${employeeName(s, r.employeeId)}`,
+      line: `${r.code} · ${employeeName(s, r.employeeId)}, ${requestWhat(r, lang)}`,
+      amount: r.loan?.amount,
+      link: { kind: 'hrRequest', id: r.id, label: r.code },
+    }))
+
+const activeListings = (s: AppState) => s.listings.filter((l) => l.status === 'active')
+
+const listingRows = (s: AppState, _p: Period, _at: string, lang: Lang): Row[] =>
+  activeListings(s).map((l) => ({
+    id: l.id,
+    label: `${l.code} ${l.title}`,
+    line: COPY.row[lang].listing(l.code, l.title, money(l.price, lang)),
+    amount: l.price,
+    link: { kind: 'listing', id: l.id, label: l.code },
+  }))
+
+const freshInquiries = (s: AppState, p: Period, at: string) => s.inquiries.filter((i) => within(i.createdAt, rangeOf(p, at)))
+
+const leadRows = (s: AppState, p: Period, at: string, lang: Lang): Row[] =>
+  freshInquiries(s, p, at).map((i) => ({
+    id: i.id,
+    label: `${i.code} · ${i.name}`,
+    line: COPY.row[lang].inquiry(i.code, i.name, COPY.inquiryStage[lang][i.status]),
+    amount: i.budget ?? undefined,
+  }))
+
+const TOPICS: Record<Topic, TopicDef> = {
+  sales: {
+    needs: 'deal.view',
+    periodic: true,
+    report: (s, p, at, lang) => {
+      const won = wonDeals(s, p, at)
+      const open = openDeals(s)
+      const top = agentTotals(salesRows(s, p, at, lang)).slice(0, 3).map((a) => `${userName(s, a.id)} ${money(a.value, lang)}`)
+      const words = COPY.sales[lang]
+      return [words.won(won.length, money(sum(won, (d) => d.value), lang)), words.open(open.length, money(sum(open, (d) => d.value), lang)), top.length ? words.top(top) : words.noTop]
+    },
+    rows: salesRows,
+    head: (_s, rows, p, at, lang) => COPY.drill[lang].sales(rows.length, whenOf(p, at, lang), money(sum(rows, (r) => r.amount ?? 0), lang)),
+    measures: (s, p, at) => [['wonValue', sum(wonDeals(s, p, at), (d) => d.value)]],
+    rank: 'topAgent',
+  },
+  finance: {
+    needs: 'finance.view',
+    periodic: true,
+    report: (s, p, at, lang) => {
+      const r = rangeOf(p, at)
+      const is = incomeStatement(s, r.from.toISOString(), r.to.toISOString())
+      const words = COPY.finance[lang]
+      return [`${words.revenue}: ${amount(is.totalRevenue, lang)}`, `${words.expense}: ${amount(is.totalExpense, lang)}`, `${words.net}: ${amount(is.netIncome, lang)}`, `${words.pastDue}: ${amount(pastDue(s, at), lang)}`]
+    },
+    rows: overdueRows,
+    head: (s, rows, _p, at, lang) => COPY.drill[lang].finance(rows.length, amount(pastDue(s, at), lang)),
+    measures: (s, p, at) => {
+      const r = rangeOf(p, at)
+      const is = incomeStatement(s, r.from.toISOString(), r.to.toISOString())
+      return [['revenue', is.totalRevenue], ['netIncome', is.netIncome]]
+    },
+    rank: 'longest',
+  },
+  inventory: {
+    needs: 'purchase.view',
+    periodic: false,
+    report: (s, _p, _at, lang) => {
+      const stock = valuation(s)
+      const low = lowStock(s).map((r) => r.item.name)
+      const words = COPY.inventory[lang]
+      return [words.value(amount(sum(stock, (r) => r.value), lang)), words.items(stock.length), low.length ? words.low(shortList(low, lang, 5)) : words.noLow]
+    },
+    rows: lowRows,
+    head: (_s, rows, _p, _at, lang) => COPY.drill[lang].inventory(rows.length),
+  },
+  purchasing: {
+    needs: 'purchase.view',
+    periodic: true,
+    report: (s, p, at, lang) => {
+      const sent = s.purchaseOrders.filter((po) => within(po.sentAt, rangeOf(p, at)))
+      const open = openOrders(s)
+      const words = COPY.purchasing[lang]
+      return [words.spend(amount(sum(sent, (po) => poTotals(po).total), lang), sent.length), words.open(open.length, open.filter((po) => isPoLate(po, toMs(at))).length), words.waiting(pendingPrs(s).length)]
+    },
+    rows: purchasingRows,
+    head: (s, _rows, _p, at, lang) => {
+      const open = openOrders(s)
+      return COPY.drill[lang].purchasing(open.length, open.filter((po) => isPoLate(po, toMs(at))).length, pendingPrs(s).length)
+    },
+    measures: (s, p, at) => [['spend', sum(s.purchaseOrders.filter((po) => within(po.sentAt, rangeOf(p, at))), (po) => poTotals(po).total)]],
+    rank: 'largest',
+  },
+  people: {
+    needs: 'hr.view',
+    periodic: false,
+    report: (s, _p, at, lang) => {
+      const staff = currentEmployees(s)
+      const states = staff.map((e) => attendanceState(s, e.id, ymd(at), toMs(at)))
+      const tally = (st: AttendanceState) => states.filter((x) => x === st).length
+      const words = COPY.people[lang]
+      return [
+        words.headcount(staff.length, s.departments.length),
+        words.today({ present: tally('present'), late: tally('late'), leave: tally('leave'), absent: tally('absent') }),
+        words.open(s.hrRequests.filter((r) => r.status === 'pending').length),
+      ]
+    },
+    rows: peopleRows,
+    head: (_s, rows, _p, _at, lang) => COPY.drill[lang].people(rows.length),
+  },
+  listings: {
+    needs: 'listing.view',
+    periodic: false,
+    report: (s, _p, _at, lang) => {
+      const by = (st: string) => s.listings.filter((l) => l.status === st).length
+      const words = COPY.listings[lang]
+      return [words.live(by('active'), by('reserved'), by('review')), words.closed(by('sold'), by('delisted')), words.value(amount(sum(activeListings(s), (l) => l.price), lang))]
+    },
+    rows: listingRows,
+    head: (_s, rows, _p, _at, lang) => COPY.drill[lang].listings(rows.length),
+    rank: 'largest',
+  },
+  leads: {
+    needs: 'inquiry.view',
+    periodic: true,
+    report: (s, p, at, lang) => {
+      const stages = (['new', 'contacted', 'survey', 'negotiation', 'won', 'lost'] as const).map((st) => `${COPY.inquiryStage[lang][st]} ${s.inquiries.filter((i) => i.status === st).length}`)
+      return [COPY.leads[lang].fresh(freshInquiries(s, p, at).length), COPY.leads[lang].stages(stages.join(', '))]
+    },
+    rows: leadRows,
+    head: (_s, rows, p, at, lang) => COPY.drill[lang].leads(rows.length, whenOf(p, at, lang)),
+    measures: (s, p, at) => [['newLeads', freshInquiries(s, p, at).length]],
+  },
+}
+
+const TOPIC_ORDER = Object.keys(TOPICS) as Topic[]
+const namedTopic = (t: string) => TOPIC_WORDS.find(([, re]) => re.test(t))?.[0] ?? null
+const reportTitle = (topic: Topic, p: Period, at: string, lang: Lang) => COPY.reportTitle[lang](topic, TOPICS[topic].periodic ? labelOf(p, at, lang) : null)
+const reportAsk = (topic: Topic, p: Period, at: string, lang: Lang) => COPY.reportAsk[lang](topic, TOPICS[topic].periodic ? labelOf(p, at, lang) : null)
+
+const remember = (c: ConsoleConvo, topic: Topic, period: Period, rows: Row[]): ConsoleConvo => ({ ...c, last: { topic, period, rows: rows.map((r) => r.id) } })
+
+/** Up to three next steps for the last report: the breakdown, a comparison and the other period. */
+const nextSteps = (topic: Topic, p: Period, at: string, lang: Lang) => {
+  if (!TOPICS[topic].periodic) return [...quick(lang, 'drill'), ...(TOPICS[topic].rank ? quick(lang, TOPICS[topic].rank!) : [])]
+  const other = samePeriod(p, THIS_MONTH) ? quick(lang, 'lastMonth') : quick(lang, 'thisMonth')
+  return [...quick(lang, 'drill'), compareAsk(labelOf(previousPeriod(p), at, lang), lang), ...other]
+}
+
+/** At most three quick replies when Jessy has nothing better: the last report's next steps, topped up with the role's starters. */
+const contextQuick = (c: ConsoleConvo, at: string) => {
+  const steps = c.last ? nextSteps(c.last.topic, c.last.period, at, langOf(c)) : []
+  return [...new Set([...steps, ...starters(c.ctx, langOf(c))])].slice(0, 3)
+}
+
+// ---------------------------------------------------------------- reports
+
+/** One reply per topic the role may see, for one period. Refuses when it may see none of them. */
+const answerReports = (s: AppState, c: ConsoleConvo, asked: Topic[], p: Period, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const allowed = asked.filter((topic) => can(c.ctx, TOPICS[topic].needs))
+  if (!allowed.length) return refuse(c, TOPICS[asked[0]].needs, asked[0], 'Read report')
+  const replies = allowed.map((topic): ConsoleReply => ({
+    text: [`${reportTitle(topic, p, at, lang)}:`, ...TOPICS[topic].report(s, p, at, lang).map((l) => `• ${l}`)].join('\n'),
+    links: [reportLink(topic, lang)],
+  }))
+  const topic = allowed[allowed.length - 1]
+  replies[replies.length - 1].quick = nextSteps(topic, p, at, lang)
+  return say(remember(c, topic, p, TOPICS[topic].rows(s, p, at, lang)), 'Read report', ['read_reports'], ...replies)
+}
+
+/** The dashboard summary: one figure line per module the role can see. */
+const dashboard = (s: AppState, c: ConsoleConvo, p: Period, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const mine = TOPIC_ORDER.filter((topic) => can(c.ctx, TOPICS[topic].needs))
+  const lines = mine.filter((topic) => topic !== 'purchasing').map((topic) => `${COPY.reportTitle[lang](topic, null)}: ${TOPICS[topic].report(s, p, at, lang)[0]}`)
+  const waiting = requestsAwaiting(s, c.ctx.userId, can(c.ctx, 'request.approve')).length + prsAwaiting(s, c.ctx.userId, can(c.ctx, 'purchase.approve')).length
+  const words = COPY.dashboard[lang]
+  return say(c, 'Read report', ['read_reports'], {
+    text: [words.head, ...lines.map((l) => `• ${l}`), `• ${words.waiting(waiting)}`, words.foot].join('\n'),
+    links: [{ kind: 'report', id: 'dashboard', label: words.link }],
+    quick: mine.filter((topic) => ['sales', 'finance', 'inventory'].includes(topic)).map((topic) => reportAsk(topic, p, at, lang)),
+  })
+}
+
+const readReport = (s: AppState, c: ConsoleConvo, t: string, at: string): ConsoleTurn => {
+  const asked = TOPIC_WORDS.filter(([, re]) => re.test(t)).map(([topic]) => topic)
+  const p = readPeriod(t) ?? THIS_MONTH
+  return asked.length ? answerReports(s, c, asked, p, at) : dashboard(s, c, p, at)
+}
+
+/** Report starters for a period, when a follow-up has no report to follow. */
+const askReport = (c: ConsoleConvo, p: Period, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const topics = TOPIC_ORDER.filter((topic) => TOPICS[topic].periodic && can(c.ctx, TOPICS[topic].needs)).slice(0, 3)
+  return say(c, 'Chat turn', [], { text: COPY.askReport[lang], quick: topics.length ? topics.map((topic) => reportAsk(topic, p, at, lang)) : starters(c.ctx, lang).slice(0, 3) })
+}
+
+const snapshot = (c: ConsoleConvo, topic: Topic) => {
+  const lang = langOf(c)
+  return say(c, 'Read report', [], { text: COPY.snapshot[lang](TOPIC_NAME[lang][topic]), quick: quick(lang, 'drill') })
+}
+
+/** The rows behind a topic for a period; when it is the report in memory, only the rows that report covered. */
+const rowsOf = (s: AppState, c: ConsoleConvo, topic: Topic, p: Period, at: string) => {
+  const rows = TOPICS[topic].rows(s, p, at, langOf(c))
+  const last = c.last
+  if (!last || last.topic !== topic || !samePeriod(last.period, p)) return rows
+  const shown = new Set(last.rows)
+  return rows.filter((r) => shown.has(r.id))
+}
+
+const MAX_ROWS = 8
+
+/** "rinci": the rows behind the report, each with a record link where one exists. */
+const drillDown = (s: AppState, c: ConsoleConvo, topic: Topic, p: Period, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const def = TOPICS[topic]
+  if (!can(c.ctx, def.needs)) return refuse(c, def.needs, topic, 'Read report')
+  const rows = rowsOf(s, c, topic, p, at)
+  const next = remember(c, topic, p, rows)
+  const steps = nextSteps(topic, p, at, lang).slice(1)
+  if (!rows.length) {
+    const text = topic === 'sales' ? COPY.metric[lang].noRevenue(whenOf(p, at, lang)) : COPY.drill[lang].none
+    return say(next, 'Read report', ['read_reports'], { text, quick: steps.length ? steps : contextQuick(c, at) })
+  }
+  const lines = rows.slice(0, MAX_ROWS).map((r) => `• ${r.line}`)
+  if (rows.length > MAX_ROWS) lines.push(`• ${COPY.drill[lang].more(rows.length - MAX_ROWS)}`)
+  const links = rows.flatMap((r) => (r.link ? [r.link] : [])).slice(0, 4)
+  const low = topic === 'inventory' && can(c.ctx, 'purchase.request') ? lowStock(s)[0] : undefined
+  const prAsk = low ? [COPY.pr[lang].ask(Math.ceil(low.short), low.item.name)] : []
+  return say(next, 'Read report', ['read_reports'], {
+    text: [def.head(s, rows, p, at, lang), ...lines].join('\n'),
+    links: [...links, reportLink(topic, lang)],
+    quick: [...prAsk, ...(def.rank ? quick(lang, def.rank) : []), ...steps].slice(0, 3),
+  })
+}
+
+/** "dibanding bulan lalu?": the period in memory against the one before it, or against the period named. */
+const compare = (s: AppState, c: ConsoleConvo, topic: Topic, named: Period | null, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const def = TOPICS[topic]
+  if (!can(c.ctx, def.needs)) return refuse(c, def.needs, topic, 'Read report')
+  if (!def.measures) return snapshot(c, topic)
+  const cur = c.last?.topic === topic ? c.last.period : (c.last?.period ?? THIS_MONTH)
+  const other = named && !samePeriod(named, cur) ? named : previousPeriod(cur)
+  const [labelA, labelB] = [whenOf(cur, at, lang), whenOf(other, at, lang)]
+  const before = new Map(def.measures(s, other, at))
+  const words = COPY.compare[lang]
+  const lines = def.measures(s, cur, at).map(([key, a]) => {
+    const b = before.get(key) ?? 0
+    const show = (n: number) => (key === 'newLeads' ? String(n) : amount(n, lang))
+    const diff = a - b
+    const pct = b ? percent((Math.abs(diff) / Math.abs(b)) * 100, lang) : null
+    const change = diff === 0 ? words.same : diff > 0 ? words.up(show(diff), pct) : words.down(show(-diff), pct)
+    return `${words.line(COPY.measure[lang][key], show(a), labelA, show(b), labelB)} ${change}`
+  })
+  return say(remember(c, topic, cur, def.rows(s, cur, at, lang)), 'Read report', ['read_reports'], {
+    text: lines.join('\n'),
+    links: [reportLink(topic, lang)],
+    quick: [...quick(lang, 'drill'), ...(def.rank ? quick(lang, def.rank) : [])],
+  })
+}
+
+/** "siapa agen terbaik?": won value per agent in the period in memory, or this month. */
+const rankAgents = (s: AppState, c: ConsoleConvo, p: Period, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  if (!can(c.ctx, 'deal.view')) return refuse(c, 'deal.view', 'sales', 'Read report')
+  const rows = rowsOf(s, c, 'sales', p, at)
+  const agents = agentTotals(rows)
+  const label = whenOf(p, at, lang)
+  const next = remember(c, 'sales', p, rows)
+  if (!agents.length) return say(next, 'Read report', ['read_reports'], { text: COPY.rank[lang].noAgent(label), quick: nextSteps('sales', p, at, lang) })
+  const [top, ...rest] = agents
+  const text = [COPY.rank[lang].agent(label, userName(s, top.id), money(top.value, lang), top.n), ...rest.map((a, i) => `${i + 2}. ${userName(s, a.id)}, ${money(a.value, lang)}`)].join('\n')
+  return say(next, 'Read report', ['read_reports'], { text, links: [reportLink('sales', lang)], quick: nextSteps('sales', p, at, lang) })
+}
+
+/** "yang terbesar?" or "yang paling lama telat?" within the rows of the report in memory. */
+const rankRows = (s: AppState, c: ConsoleConvo, topic: Topic, p: Period, by: 'largest' | 'longest', at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const def = TOPICS[topic]
+  if (!can(c.ctx, def.needs)) return refuse(c, def.needs, topic, 'Read report')
+  const rows = rowsOf(s, c, topic, p, at)
+  const weigh = (r: Row) => (by === 'largest' ? r.amount : r.days)
+  const best = rows.filter((r) => weigh(r) !== undefined).sort((a, b) => weigh(b)! - weigh(a)!)[0]
+  const next = remember(c, topic, p, rows)
+  const steps = nextSteps(topic, p, at, lang).filter((q) => q !== quick(lang, by)[0])
+  if (!best) return say(next, 'Read report', ['read_reports'], { text: COPY.noRank[lang], quick: steps })
+  const text = by === 'largest' ? COPY.rank[lang].largest(best.label, money(best.amount!, lang)) : COPY.rank[lang].longest(best.label, best.days!)
+  return say(next, 'Read report', ['read_reports'], { text, links: best.link ? [best.link] : [reportLink(topic, lang)], quick: steps })
+}
+
+/** What is left of a follow-up once its period, topic and filler words are gone; empty means it asks nothing new. */
+const leftover = (t: string) =>
+  TOPIC_WORDS.reduce((acc, [, re]) => acc.replace(new RegExp(re.source, 'g'), ' '), withoutPeriod(t))
+    .replace(INTENT.followFiller, ' ')
+    .replace(/[^a-z0-9]+/g, '')
+
+/** Questions that build on the last report: compare, rank, drill down, another period, another topic. */
+const followUp = (s: AppState, c: ConsoleConvo, t: string, at: string): ConsoleTurn | null => {
+  const named = namedTopic(t)
+  const period = readPeriod(t)
+  const topic = named ?? c.last?.topic ?? null
+  const p = period ?? c.last?.period ?? THIS_MONTH
+  if (INTENT.rankAgent.test(t)) return rankAgents(s, c, p, at)
+  if (INTENT.compare.test(t)) return topic ? compare(s, c, topic, period, at) : askReport(c, THIS_MONTH, at)
+  const rank = INTENT.rankLongest.test(t) ? 'longest' : INTENT.rankLargest.test(t) ? 'largest' : null
+  if (rank) return topic ? rankRows(s, c, topic, p, rank, at) : askReport(c, p, at)
+  if (topic && INTENT.drill.test(t)) return drillDown(s, c, topic, p, at)
+  if (leftover(t)) return null
+  if (period && !named) {
+    if (!c.last) return askReport(c, period, at)
+    return TOPICS[c.last.topic].periodic ? answerReports(s, c, [c.last.topic], period, at) : snapshot(c, c.last.topic)
+  }
+  if (named && INTENT.refine.test(t)) return answerReports(s, c, [named], p, at)
+  return null
+}
+
+// ---------------------------------------------------------------- short metric questions
+
+/** "berapa omzet bulan ini?": one sentence from the store, then the full report as a quick reply. */
+const metric = (s: AppState, c: ConsoleConvo, m: Metric, t: string, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  const topic = METRIC_TOPIC[m]
+  const def = TOPICS[topic]
+  if (!can(c.ctx, def.needs)) return refuse(c, def.needs, topic, 'Read report')
+  const p = readPeriod(t) ?? THIS_MONTH
+  const label = whenOf(p, at, lang)
+  const rows = def.rows(s, p, at, lang)
+  const words = COPY.metric[lang]
+  const sentence = (): string => {
+    switch (m) {
+      case 'revenue':
+        return rows.length ? words.revenue(label, money(sum(rows, (r) => r.amount ?? 0), lang), rows.length) : words.noRevenue(label)
+      case 'netIncome': {
+        const r = rangeOf(p, at)
+        const is = incomeStatement(s, r.from.toISOString(), r.to.toISOString())
+        return words.netIncome(label, amount(is.netIncome, lang), amount(is.totalRevenue, lang), amount(is.totalExpense, lang))
+      }
+      case 'overdue':
+        return rows.length ? words.overdue(rows.length, amount(pastDue(s, at), lang)) : words.noOverdue
+      case 'lowStock':
+        return rows.length ? words.lowStock(rows.length, shortList(rows.map((r) => r.label), lang)) : words.noLowStock
+      case 'activeListings':
+        return words.activeListings(rows.length, amount(sum(rows, (r) => r.amount ?? 0), lang))
+      case 'newLeads':
+        return words.newLeads(label, rows.length)
+    }
+  }
+  const compareStep = def.periodic ? [compareAsk(labelOf(previousPeriod(p), at, lang), lang)] : []
+  return say(remember(c, topic, p, rows), 'Read report', ['read_reports'], {
+    text: sentence(),
+    links: [reportLink(topic, lang)],
+    quick: [reportAsk(topic, p, at, lang), ...quick(lang, 'drill'), ...compareStep],
+  })
+}
+
+const readMetric = (s: AppState, c: ConsoleConvo, t: string, at: string): ConsoleTurn | null => {
+  const m = METRIC_WORDS.find(([, re]) => re.test(t))?.[0]
+  return m ? metric(s, c, m, t, at) : null
 }
 
 // ---------------------------------------------------------------- reads
 
-const ATTENDANCE_ORDER: AttendanceState[] = ['present', 'late', 'leave', 'absent', 'upcoming']
-const ATTENDANCE_WORD: Partial<Record<AttendanceState, string>> = { present: 'In on time', late: 'Late', leave: 'On leave', absent: 'Absent', upcoming: 'Not in yet' }
+const ATTENDANCE_ORDER = ['present', 'late', 'leave', 'absent', 'upcoming'] as const
 
 const readAttendance = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
   if (!can(convo.ctx, 'hr.view')) return refuse(convo, 'hr.view', 'attendance', 'Read attendance')
+  const lang = langOf(convo)
+  const words = COPY.attendance[lang]
   const now = toMs(at)
   const today = ymd(at)
   const dept = s.departments.find((d) => {
@@ -165,97 +685,79 @@ const readAttendance = (s: AppState, convo: ConsoleConvo, t: string, at: string)
     const st = attendanceState(s, e.id, today, now)
     groups.set(st, [...(groups.get(st) ?? []), e.name])
   }
-  const only: AttendanceState | null = has(t, /\b(late|telat|terlambat)\b/) ? 'late' : has(t, /\b(leave|cuti)\b/) ? 'leave' : has(t, /\b(absent|bolos|tidak hadir)\b/) ? 'absent' : null
-  const scope = dept ? ` in ${dept.name}` : ''
-  const lines = (only ? [only] : ATTENDANCE_ORDER).flatMap((st) => {
+  const scope = dept ? words.scope(dept.name) : ''
+  const links: RecordLink[] = [{ kind: 'attendance', label: words.link }]
+  const c = remember(convo, 'people', THIS_MONTH, TOPICS.people.rows(s, THIS_MONTH, at, lang))
+  const only: 'late' | 'leave' | 'absent' | null = has(t, /\b(late|telat|terlambat)\b/) ? 'late' : has(t, /\b(leave|cuti)\b/) ? 'leave' : has(t, /\b(absent|bolos|tidak hadir)\b/) ? 'absent' : null
+  if (only) {
+    const names = groups.get(only) ?? []
+    const text = names.length ? words.only(words.state[only], scope, listJoin(names, lang)) : words.nobody(words.state[only], scope)
+    return say(c, 'Read attendance', ['read_attendance'], { text, links, quick: [reportAsk('people', THIS_MONTH, at, lang)] })
+  }
+  const lines = ATTENDANCE_ORDER.flatMap((st) => {
     const names = groups.get(st) ?? []
-    if (only) return [names.length ? `${ATTENDANCE_WORD[st]}: ${names.join(', ')}` : `Nobody is ${ATTENDANCE_WORD[st]!.toLowerCase()}${scope} today.`]
-    return names.length ? [`${ATTENDANCE_WORD[st]} (${names.length}): ${names.join(', ')}`] : []
+    return names.length ? [`${words.state[st]} (${names.length}): ${names.join(', ')}`] : []
   })
-  const head = `Attendance on ${fmtDate(at)} for ${plural(people.length, 'person', 'people')}${scope}:`
-  return say(convo, 'Read attendance', ['read_attendance'], { text: [head, ...lines].join('\n'), links: [{ kind: 'attendance', label: 'Open attendance' }] })
+  return say(c, 'Read attendance', ['read_attendance'], { text: [words.head(dateOf(at, lang), people.length, scope), ...lines].join('\n'), links })
 }
 
-const readStock = (s: AppState, convo: ConsoleConvo, t: string): ConsoleTurn => {
-  if (!can(convo.ctx, 'purchase.view')) return refuse(convo, 'purchase.view', 'stock', 'Read stock')
-  const item = has(t, /\b(low|rendah|habis|menipis|minimum)\b/) ? null : bestMatch(s.items.filter((i) => i.active), (i) => i.name, t.replace(/\b(stock|stok|of|how much|how many|on hand|persediaan)\b/g, ' '))
-  if (item) {
-    const total = onHand(s, item.id)
-    const by = stockByWarehouse(s, item.id).filter((w) => w.qty !== 0)
-    const lines = by.map((w) => `• ${w.warehouse.name}: ${fmtQty(s, item.id, w.qty)}`)
-    const low = total < item.minStock ? ` That is below the minimum of ${fmtQty(s, item.id, item.minStock)}.` : ''
-    return say(convo, 'Read stock', ['read_stock'], {
-      text: [`${item.name}: ${fmtQty(s, item.id, total)} on hand.${low}`, ...lines].join('\n'),
-      links: [{ kind: 'item', id: item.id, label: item.name }],
-    })
-  }
-  const low = lowStock(s)
-  if (!low.length) return say(convo, 'Read stock', ['read_stock'], { text: 'Every active item is at or above its minimum stock.', links: [{ kind: 'stock', label: 'Open stock' }] })
-  const lines = low.map((r) => `• ${r.item.name}: ${fmtQty(s, r.item.id, r.qty)}, ${fmtQty(s, r.item.id, r.short)} short`)
+const readStock = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
+  if (!can(convo.ctx, 'purchase.view')) return refuse(convo, 'purchase.view', 'inventory', 'Read stock')
+  const lang = langOf(convo)
+  const item = bestMatch(s.items.filter((i) => i.active), (i) => i.name, t.replace(/\b(stock|stok|of|how much|how many|on hand|persediaan|berapa)\b/g, ' '))
+  if (!item) return drillDown(s, convo, 'inventory', THIS_MONTH, at)
+  const words = COPY.stockItem[lang]
+  const total = onHand(s, item.id)
+  const lines = stockByWarehouse(s, item.id)
+    .filter((w) => w.qty !== 0)
+    .map((w) => `• ${w.warehouse.name}: ${fmtQty(s, item.id, w.qty)}`)
+  const low = total < item.minStock ? words.below(fmtQty(s, item.id, item.minStock)) : ''
   return say(convo, 'Read stock', ['read_stock'], {
-    text: [`${plural(low.length, 'item is', 'items are')} below minimum stock:`, ...lines].join('\n'),
-    links: low.slice(0, 4).map((r) => ({ kind: 'item', id: r.item.id, label: r.item.name })),
-    quick: can(convo.ctx, 'purchase.request') ? [`Raise a PR for ${Math.ceil(low[0].short)} ${low[0].item.name}`] : undefined,
+    text: [`${words.head(item.name, fmtQty(s, item.id, total))}${low}`, ...lines].join('\n'),
+    links: [{ kind: 'item', id: item.id, label: item.name }],
   })
-}
-
-const periodOf = (t: string, at: string) => {
-  const d = new Date(at)
-  const y = d.getFullYear()
-  const m = d.getMonth()
-  if (has(t, /\b(last month|bulan lalu|previous month)\b/)) return { label: 'last month', from: new Date(y, m - 1, 1), to: new Date(y, m, 1) }
-  if (has(t, /\b(quarter|kuartal|triwulan|q[1-4])\b/)) {
-    const q = Math.floor(m / 3) * 3
-    return { label: 'this quarter', from: new Date(y, q, 1), to: new Date(y, q + 3, 1) }
-  }
-  return { label: 'this month', from: new Date(y, m, 1), to: new Date(y, m + 1, 1) }
 }
 
 const readSales = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
   if (!can(convo.ctx, 'deal.view')) return refuse(convo, 'deal.view', 'sales', 'Read sales')
-  if (has(t, /\b(pipeline|stage|stages|tahap|funnel)\b/)) {
-    const open = s.stages.filter((st) => st.kind === 'open')
-    const lines = open.map((st) => {
+  if (!has(t, /\b(pipeline|stage|stages|tahap|funnel)\b/)) return drillDown(s, convo, 'sales', readPeriod(t) ?? THIS_MONTH, at)
+  const lang = langOf(convo)
+  const words = COPY.pipeline[lang]
+  const lines = s.stages
+    .filter((st) => st.kind === 'open')
+    .map((st) => {
       const deals = s.deals.filter((d) => d.stageId === st.id)
-      return `• ${st.name}: ${plural(deals.length, 'deal')}, ${fmtIdrShort(deals.reduce((n, d) => n + d.value, 0))}`
+      return `• ${words.stage(st.name, deals.length, money(sum(deals, (d) => d.value), lang))}`
     })
-    const all = s.deals.filter((d) => stageOf(s, d)?.kind === 'open')
-    return say(convo, 'Read sales', ['read_sales'], {
-      text: [`The open pipeline holds ${plural(all.length, 'deal')} worth ${fmtIdrShort(all.reduce((n, d) => n + d.value, 0))}.`, ...lines].join('\n'),
-      links: [{ kind: 'pipeline', label: 'Open the pipeline' }],
-    })
-  }
-  const p = periodOf(t, at)
-  const won = s.deals.filter((d) => stageOf(s, d)?.kind === 'won' && d.closedAt && toMs(d.closedAt) >= p.from.getTime() && toMs(d.closedAt) < p.to.getTime())
-  if (!won.length) return say(convo, 'Read sales', ['read_sales'], { text: `No deals were won ${p.label}.`, quick: ['Pipeline by stage'] })
-  const value = won.reduce((n, d) => n + d.value, 0)
+  const open = openDeals(s)
   return say(convo, 'Read sales', ['read_sales'], {
-    text: [`${plural(won.length, 'deal')} won ${p.label}, worth ${fmtIdrShort(value)}:`, ...won.map((d) => `• ${d.code} ${d.title}, ${fmtIdrShort(d.value)}`)].join('\n'),
-    links: won.slice(0, 4).map((d) => ({ kind: 'deal', id: d.id, label: d.code })),
-    quick: ['Pipeline by stage'],
+    text: [words.head(open.length, money(sum(open, (d) => d.value), lang)), ...lines].join('\n'),
+    links: [{ kind: 'pipeline', label: words.link }],
   })
 }
 
 const readCandidate = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
   if (!can(convo.ctx, 'hr.view')) return refuse(convo, 'hr.view', 'candidates', 'Read candidates')
+  const words = COPY.candidate[langOf(convo)]
   const stage = (Object.keys(CANDIDATE_STAGE_LABEL) as (keyof typeof CANDIDATE_STAGE_LABEL)[]).find((k) => t.includes(CANDIDATE_STAGE_LABEL[k].toLowerCase()))
   const c = bestMatch(s.candidates, (x) => x.name, t)
   if (!c) {
     const rows = stage ? s.candidates.filter((x) => x.stage === stage) : []
-    if (!rows.length) return say(convo, 'Read candidates', ['read_candidates'], { text: 'Which candidate? Give me a name, for example "status of Clara Wijaya".' })
+    if (!rows.length) return say(convo, 'Read candidates', ['read_candidates'], { text: words.which })
     return say(convo, 'Read candidates', ['read_candidates'], {
-      text: [`${plural(rows.length, 'candidate is', 'candidates are')} at ${CANDIDATE_STAGE_LABEL[stage!]}:`, ...rows.map((x) => `• ${x.name}`)].join('\n'),
+      text: [words.atStage(rows.length, CANDIDATE_STAGE_LABEL[stage!]), ...rows.map((x) => `• ${x.name}`)].join('\n'),
       links: rows.slice(0, 4).map((x) => ({ kind: 'candidate', id: x.id, label: x.name })),
     })
   }
   const opening = s.jobOpenings.find((o) => o.id === c.openingId)
   const next = c.interviews.filter((i) => toMs(i.at) >= toMs(at)).sort((a, b) => a.at.localeCompare(b.at))[0]
+  const lang = langOf(convo)
   const lines = [
-    `${c.name} is at ${CANDIDATE_STAGE_LABEL[c.stage]}${opening ? ` for ${opening.title} (${opening.code})` : ', in the talent pool'}.`,
-    c.tests.length ? `Tests taken: ${c.tests.length}, best score ${Math.max(...c.tests.map((x) => x.score))}.` : '',
-    next ? `Next interview: ${fmtDateTime(next.at)}, ${next.mode === 'video' ? 'video call' : 'on site'}.` : '',
-    c.offer ? `Offer: ${fmtIdrShort(c.offer.salary)} a month, ${c.offer.status}.` : '',
-    c.stage === 'rejected' && c.rejectReason ? `Reason: ${c.rejectReason}` : '',
+    words.status(c.name, CANDIDATE_STAGE_LABEL[c.stage], opening ? `${opening.title} (${opening.code})` : null),
+    c.tests.length ? words.tests(c.tests.length, Math.max(...c.tests.map((x) => x.score))) : '',
+    next ? words.next(dateTimeOf(next.at, lang), next.mode === 'video') : '',
+    c.offer ? words.offer(money(c.offer.salary, lang), c.offer.status) : '',
+    c.stage === 'rejected' && c.rejectReason ? words.reason(c.rejectReason) : '',
   ].filter(Boolean)
   return say(convo, 'Read candidates', ['read_candidates'], { text: lines.join('\n'), links: [{ kind: 'candidate', id: c.id, label: c.name }] })
 }
@@ -269,76 +771,57 @@ interface Awaiting {
 }
 
 /** Everything the member may decide now: HR requests, purchase requests and, with deal.approve, discounted quotations. */
-const awaiting = (s: AppState, ctx: ConsoleCtx): Awaiting[] => [
+const awaiting = (s: AppState, ctx: ConsoleCtx, lang: Lang): Awaiting[] => [
   ...requestsAwaiting(s, ctx.userId, can(ctx, 'request.approve')).map((r): Awaiting => {
-    const what = r.leave ? `${plural(r.leave.days, 'day')} of leave from ${fmtDate(r.leave.from)}` : r.overtime ? `${r.overtime.hours} h overtime` : `loan of ${fmtIdrShort(r.loan?.amount ?? 0)}`
     const who = employeeName(s, r.employeeId)
-    return { target: 'hr', id: r.id, code: r.code, who, line: `${r.code} · ${who}, ${what}, ${currentStep(r)!.label} step` }
+    return { target: 'hr', id: r.id, code: r.code, who, line: COPY.decideStep[lang](r.code, who, requestWhat(r, lang), currentStep(r)!.label) }
   }),
   ...prsAwaiting(s, ctx.userId, can(ctx, 'purchase.approve')).map((r): Awaiting => {
     const who = employeeName(s, r.requesterId)
-    return { target: 'pr', id: r.id, code: r.code, who, line: `${r.code} · ${who}, ${plural(r.lines.length, 'item')}, about ${fmtIdrShort(prTotal(r))}` }
+    return { target: 'pr', id: r.id, code: r.code, who, line: `${r.code} · ${who}, ${COPY.approvals[lang].items(r.lines.length)}, ${COPY.approvals[lang].about(money(prTotal(r), lang))}` }
   }),
   ...(can(ctx, 'deal.approve') ? s.quotations.filter((q) => q.status === 'pending_approval') : []).map((q): Awaiting => {
     const deal = s.deals.find((d) => d.id === q.dealId)
-    return { target: 'quotation', id: q.id, code: q.code, who: deal?.title ?? 'Deal', line: `${q.code} · ${deal?.title ?? 'Deal'}, ${q.discountPct}% discount` }
+    return { target: 'quotation', id: q.id, code: q.code, who: deal?.title ?? 'Deal', line: `${q.code} · ${deal?.title ?? 'Deal'}, ${COPY.approvals[lang].discount(q.discountPct)}` }
   }),
 ]
 
 const LINK_FOR: Record<Awaiting['target'], RecordLinkKind> = { hr: 'hrRequest', pr: 'pr', quotation: 'quotation' }
 
 const readApprovals = (s: AppState, convo: ConsoleConvo): ConsoleTurn => {
-  const rows = awaiting(s, convo.ctx)
-  if (!rows.length) return say(convo, 'Read approvals', ['read_approvals'], { text: 'Nothing waits for your approval right now.' })
+  const lang = langOf(convo)
+  const words = COPY.approvals[lang]
+  const rows = awaiting(s, convo.ctx, lang)
+  if (!rows.length) return say(convo, 'Read approvals', ['read_approvals'], { text: words.none })
   return say(convo, 'Read approvals', ['read_approvals'], {
-    text: [`${plural(rows.length, 'request waits', 'requests wait')} for you:`, ...rows.map((r) => `• ${r.line}`), 'Say "approve" or "reject" with a code to decide one.'].join('\n'),
-    links: [...rows.slice(0, 4).map((r) => ({ kind: LINK_FOR[r.target], id: r.id, label: r.code })), { kind: 'approvals', label: 'All approvals' }],
-    quick: rows.slice(0, 2).map((r) => `Approve ${r.code}`),
-  })
-}
-
-const readReceivables = (s: AppState, convo: ConsoleConvo, at: string): ConsoleTurn => {
-  if (!can(convo.ctx, 'finance.view')) return refuse(convo, 'finance.view', 'invoices', 'Read receivables')
-  const now = toMs(at)
-  const overdue = s.invoices
-    .filter((i) => i.status === 'issued' && agingBucket(i.dueDate, now) > 0)
-    .map((i) => ({ i, balance: invoiceTotals(i).balance }))
-    .filter((r) => r.balance > 0)
-    .sort((a, b) => a.i.dueDate.localeCompare(b.i.dueDate))
-  if (!overdue.length) return say(convo, 'Read receivables', ['read_receivables'], { text: 'No invoice is overdue.' })
-  const total = receivableAging(s, now).totals.slice(1).reduce((n, x) => n + x, 0)
-  const lines = overdue.map(({ i, balance }) => `• ${i.code} · ${customerName(s, i)}, ${fmtIdrShort(balance)}, ${plural(Math.floor((now - toMs(i.dueDate)) / DAY), 'day')} late`)
-  return say(convo, 'Read receivables', ['read_receivables'], {
-    text: [`${plural(overdue.length, 'invoice is', 'invoices are')} overdue, ${fmtIdrShort(total)} in all:`, ...lines].join('\n'),
-    links: overdue.slice(0, 4).map(({ i }) => ({ kind: 'invoice', id: i.id, label: i.code })),
+    text: [words.head(rows.length), ...rows.map((r) => `• ${r.line}`), words.foot].join('\n'),
+    links: [...rows.slice(0, 4).map((r) => ({ kind: LINK_FOR[r.target], id: r.id, label: r.code })), { kind: 'approvals', label: words.all }],
+    quick: rows.slice(0, 2).map((r) => `${words.verb.approved} ${r.code}`),
   })
 }
 
 const readExclusives = (s: AppState, convo: ConsoleConvo, at: string): ConsoleTurn => {
-  if (!can(convo.ctx, 'exclusive.view')) return refuse(convo, 'exclusive.view', 'exclusive rights', 'Read exclusive rights')
+  if (!can(convo.ctx, 'exclusive.view')) return refuse(convo, 'exclusive.view', 'exclusives', 'Read exclusive rights')
+  const lang = langOf(convo)
+  const words = COPY.exclusives[lang]
   const now = toMs(at)
   const due = s.exclusives.filter((e) => exclusiveState(e, now) === 'due').sort((a, b) => a.endsAt.localeCompare(b.endsAt))
-  if (!due.length) return say(convo, 'Read exclusive rights', ['read_exclusives'], { text: 'No exclusive right ends in the next 30 days.', links: [{ kind: 'exclusives', label: 'Open exclusive rights' }] })
-  const lines = due.map((e) => {
-    const l = s.listings.find((x) => x.id === e.listingId)
-    return `• ${l?.code ?? 'Listing'} ${l?.title ?? ''}, ends ${fmtDate(e.endsAt)}, ${plural(daysLeft(e, now), 'day')} left`
-  })
+  if (!due.length) return say(convo, 'Read exclusive rights', ['read_exclusives'], { text: words.none, links: [{ kind: 'exclusives', label: words.link }] })
+  const listing = (id: string) => s.listings.find((x) => x.id === id)
+  const lines = due.map((e) => `• ${words.row(listing(e.listingId)?.code ?? 'Listing', listing(e.listingId)?.title ?? '', dateOf(e.endsAt, lang), daysLeft(e, now))}`)
   return say(convo, 'Read exclusive rights', ['read_exclusives'], {
-    text: [`${plural(due.length, 'exclusive right ends', 'exclusive rights end')} within 30 days:`, ...lines].join('\n'),
-    links: [...due.slice(0, 3).map((e) => ({ kind: 'listing' as const, id: e.listingId, label: s.listings.find((x) => x.id === e.listingId)?.code ?? 'Listing' })), { kind: 'exclusives', label: 'All exclusive rights' }],
+    text: [words.head(due.length), ...lines].join('\n'),
+    links: [...due.slice(0, 3).map((e) => ({ kind: 'listing' as const, id: e.listingId, label: listing(e.listingId)?.code ?? 'Listing' })), { kind: 'exclusives', label: words.all }],
   })
 }
 
 const readLeave = (s: AppState, convo: ConsoleConvo, at: string): ConsoleTurn => {
+  const words = COPY.leave[langOf(convo)]
   const me = employeeOfUser(s, convo.ctx.userId)
-  if (!me) return say(convo, 'Read leave balance', [], { text: 'You have no employee record, so there is no leave balance to show.' })
+  if (!me) return say(convo, 'Read leave balance', [], { text: words.noEmployee })
   const year = new Date(at).getFullYear()
   const b = leaveBalance(s, me.id, year)
-  const pending = b.pending ? `, and ${plural(b.pending, 'day')} wait${b.pending === 1 ? 's' : ''} for approval` : ''
-  return say(convo, 'Read leave balance', ['read_leave'], {
-    text: `You have ${plural(b.left, 'day')} of annual leave left in ${year}. Your quota is ${b.quota}, you have used ${b.used}${pending}.`,
-    links: [{ kind: 'meRequests', label: 'My requests' }],
-  })
+  return say(convo, 'Read leave balance', ['read_leave'], { text: words.balance(b.left, year, b.quota, b.used, b.pending), links: [{ kind: 'meRequests', label: words.link }] })
 }
 
 // ---------------------------------------------------------------- writes
@@ -347,9 +830,13 @@ interface Built {
   actions: AppAction[]
   title: string
   lines: string[]
+  /** The change in one sentence, shown above the card. */
+  summary: string
   /** What Jessy says once the change ran. */
   done: string
   links: RecordLink[]
+  /** The related next step she offers after the change, when the role may take it. */
+  next: { ask: string; quick: string } | null
 }
 
 /** The first store refusal across the actions, each checked against the state the earlier ones leave. */
@@ -382,13 +869,18 @@ const dayAt = (at: string, days: number, hour: number) => {
 }
 
 /** Builds the store actions for an intent, or the sentence saying why it cannot run. */
-const build = (s: AppState, ctx: ConsoleCtx, intent: ConsoleIntent, at: string): Built | string => {
+const build = (s: AppState, ctx: ConsoleCtx, intent: ConsoleIntent, at: string, lang: Lang): Built | string => {
   const me = employeeOfUser(s, ctx.userId)
+  const offer = (needs: Permission | null, ask: string, chip: string) => (!needs || can(ctx, needs) ? { ask, quick: chip } : null)
+  const next = COPY.next[lang]
   switch (intent.kind) {
     case 'pr': {
-      if (!me) return 'You have no employee record, so I cannot raise a request in your name.'
+      if (!me) return COPY.noEmployee[lang].pr
+      const words = COPY.pr[lang]
       const item = s.items.find((i) => i.id === intent.itemId)!
       const estPrice = bestPrice(s, item.id, intent.qty, at)?.price ?? 0
+      const est = estPrice ? money(estPrice * intent.qty, lang) : null
+      const qty = fmtQty(s, item.id, intent.qty)
       const pr = {
         id: newId('pr'),
         code: nextPrCode(s),
@@ -405,109 +897,131 @@ const build = (s: AppState, ctx: ConsoleCtx, intent: ConsoleIntent, at: string):
       }
       return {
         actions: [{ type: 'prs/save', pr }, { type: 'prs/submit', id: pr.id }],
-        title: `Raise purchase request ${pr.code}`,
-        lines: [`Item: ${item.name}`, `Quantity: ${fmtQty(s, item.id, intent.qty)}`, `Estimate: ${estPrice ? fmtIdrShort(estPrice * intent.qty) : 'no vendor price yet'}`, `Needed by: ${fmtDate(pr.neededBy)}`, `Reason: ${intent.reason}`, 'It goes for approval as soon as you confirm.'],
-        done: `Done. ${pr.code} for ${fmtQty(s, item.id, intent.qty)} of ${item.name} is waiting for approval.`,
+        title: words.title(pr.code),
+        lines: words.lines(item.name, qty, est, dateOf(pr.neededBy, lang), intent.reason),
+        summary: words.summary(pr.code, qty, item.name, est),
+        done: words.done(pr.code, qty, item.name),
         links: [{ kind: 'pr', id: pr.id, label: pr.code }],
+        next: offer('purchase.view', next.pr, reportAsk('purchasing', THIS_MONTH, at, lang)),
       }
     }
     case 'decide': {
-      const verb = intent.decision === 'approved' ? 'Approve' : 'Reject'
+      const words = COPY.decide[lang]
+      const verb = COPY.approvals[lang].verb[intent.decision]
       const action: AppAction =
         intent.target === 'hr'
           ? { type: 'hrRequests/decide', id: intent.id, decision: intent.decision, note: intent.note, by: ctx.userId }
           : intent.target === 'pr'
             ? { type: 'prs/decide', id: intent.id, decision: intent.decision, note: intent.note, by: ctx.userId }
             : { type: intent.decision === 'approved' ? 'quotations/approve' : 'quotations/reject', id: intent.id }
-      const row = awaiting(s, ctx).find((r) => r.id === intent.id)
+      const row = awaiting(s, ctx, lang).find((r) => r.id === intent.id)
       const code = row?.code ?? intent.id
       return {
         actions: [action],
-        title: `${verb} ${code}`,
-        lines: [row?.line ?? code, ...(intent.note ? [`Note: ${intent.note}`] : [])],
-        done: `Done. You ${intent.decision} ${code}.`,
+        title: words.title(verb, code),
+        lines: [row?.line ?? code, ...(intent.note ? [words.note(intent.note)] : [])],
+        summary: words.summary(intent.decision, code),
+        done: words.done(words.decided[intent.decision], code),
         links: [{ kind: LINK_FOR[intent.target], id: intent.id, label: code }],
+        next: offer(null, next.decide, quick(lang, 'approvals')[0]),
       }
     }
     case 'checkIn': {
-      if (!me) return 'You have no employee record, so there is nothing to check in.'
+      if (!me) return COPY.noEmployee[lang].checkIn
+      const words = COPY.checkIn[lang]
       const attendance = buildCheckIn(s, me.id, at, null, null)
       const shift = shiftOn(s, me.id, attendance.date)
       return {
         actions: [{ type: 'attendance/checkIn', attendance }],
-        title: `Check in at ${fmtTime(at)}`,
-        lines: [`Employee: ${me.name}`, `Date: ${fmtDate(at)}`, shift ? `Shift: ${shift.name}, ${shift.start} to ${shift.end}` : 'No shift today', 'No photo or location is sent from the chat.'],
-        done: `Done. You checked in at ${fmtTime(at)}.`,
-        links: [{ kind: 'me', label: 'My day' }],
+        title: words.title(fmtTime(at)),
+        lines: words.lines(me.name, dateOf(at, lang), shift ? words.shift(shift.name, shift.start, shift.end) : null),
+        summary: words.summary(fmtTime(at)),
+        done: words.done(fmtTime(at)),
+        links: [{ kind: 'me', label: words.link }],
+        next: offer(null, next.checkIn, quick(lang, 'leave')[0]),
       }
     }
     case 'announce': {
+      const words = COPY.announce[lang]
       const announcement = { id: newId('ann'), title: intent.title, body: intent.body, departmentId: null, pinned: false, authorId: ctx.userId, publishedAt: at, readBy: [ctx.userId] }
       return {
         actions: [{ type: 'announcements/upsert', announcement }],
-        title: 'Post an announcement',
-        lines: [`Title: ${intent.title}`, `Message: ${intent.body}`, 'Audience: everyone'],
-        done: `Done. "${intent.title}" is posted for everyone.`,
-        links: [{ kind: 'announcements', label: 'Announcements' }],
+        title: words.title,
+        lines: words.lines(intent.title, intent.body),
+        summary: words.summary(intent.title),
+        done: words.done(intent.title),
+        links: [{ kind: 'announcements', label: words.link }],
+        next: offer(null, next.announce, quick(lang, 'dashboard')[0]),
       }
     }
     case 'task': {
+      const words = COPY.task[lang]
       const deal = s.deals.find((d) => d.id === intent.dealId)!
       const task = { id: newId('tsk'), title: intent.title, kind: intent.taskKind, dueAt: intent.dueAt, ownerId: ctx.userId, ref: { type: 'deal' as const, id: deal.id }, doneAt: null, createdAt: at }
+      const due = dateTimeOf(intent.dueAt, lang)
       return {
         actions: [{ type: 'tasks/create', task }],
-        title: 'Add a follow-up',
-        lines: [`Deal: ${deal.code} ${deal.title}`, `Task: ${intent.title}`, `Kind: ${TASK_KIND_LABEL[intent.taskKind]}`, `Due: ${fmtDateTime(intent.dueAt)}`, `Owner: you`],
-        done: `Done. The follow-up on ${deal.code} is due ${fmtDateTime(intent.dueAt)}.`,
-        links: [{ kind: 'deal', id: deal.id, label: deal.code }, { kind: 'followUps', label: 'Follow-ups' }],
+        title: words.title,
+        lines: words.lines(`${deal.code} ${deal.title}`, intent.title, TASK_KIND[lang][intent.taskKind], due),
+        summary: words.summary(deal.code, due),
+        done: words.done(deal.code, due),
+        links: [{ kind: 'deal', id: deal.id, label: deal.code }, { kind: 'followUps', label: words.link }],
+        next: offer('deal.view', next.task, COPY.pipeline[lang].ask),
       }
     }
   }
 }
 
 const propose = (s: AppState, convo: ConsoleConvo, intent: ConsoleIntent, at: string): ConsoleTurn => {
+  const lang = langOf(convo)
   const purpose = PROPOSE_PURPOSE[intent.kind]
   const needs = NEEDS[intent.kind]
-  if (needs && !can(convo.ctx, needs)) {
-    return say({ ...convo, pending: null }, purpose, [], { text: `Sorry, your role cannot do that. It needs the "${PERMISSION_LABEL.get(needs) ?? needs}" permission.` })
-  }
-  const built = build(s, convo.ctx, intent, at)
-  if (typeof built === 'string') return say({ ...convo, pending: null }, purpose, [], { text: built })
+  const cleared = { ...convo, pending: null }
+  if (needs && !can(convo.ctx, needs)) return say(cleared, purpose, [], { text: COPY.refuseWrite[lang](permLabel(needs)) })
+  const built = build(s, convo.ctx, intent, at, lang)
+  if (typeof built === 'string') return say(cleared, purpose, [], { text: built })
   const blocker = firstBlocker(s, built.actions, convo.ctx.userId, at)
-  if (blocker) return say({ ...convo, pending: null }, purpose, [], { text: `I cannot do that: ${blocker}` })
+  if (blocker) return say(cleared, purpose, [], { text: COPY.cannot[lang](blocker) })
+  const words = COPY.propose[lang]
   return say({ ...convo, pending: intent }, purpose, [], {
-    text: 'Here is the change. Nothing happens until you confirm.',
-    proposal: { title: built.title, lines: built.lines },
-    quick: ['Confirm', 'Cancel'],
+    text: `${built.summary} ${words.note}`,
+    proposal: { title: built.title, lines: built.lines, confirm: words.confirm, cancel: words.cancel },
+    quick: [words.confirm, words.cancel],
   })
 }
 
 const confirm = (s: AppState, convo: ConsoleConvo, intent: ConsoleIntent, at: string): ConsoleTurn => {
+  const lang = langOf(convo)
   const cleared = { ...convo, pending: null }
-  const built = build(s, convo.ctx, intent, at)
+  const built = build(s, convo.ctx, intent, at, lang)
   if (typeof built === 'string') return say(cleared, 'Confirm change', [], { text: built })
   const blocker = firstBlocker(s, built.actions, convo.ctx.userId, at)
-  if (blocker) return say(cleared, 'Confirm change', [], { text: `The change did not go through: ${blocker}` })
-  return { convo: cleared, actions: built.actions, replies: [{ text: built.done, links: built.links }], log: { purpose: 'Confirm change', tools: [] } }
+  if (blocker) return say(cleared, 'Confirm change', [], { text: COPY.failed[lang](blocker) })
+  const text = built.next ? `${built.done} ${built.next.ask}` : built.done
+  return { convo: cleared, actions: built.actions, replies: [{ text, links: built.links, quick: built.next ? [built.next.quick] : undefined }], log: { purpose: 'Confirm change', tools: [] } }
 }
 
 // ---------------------------------------------------------------- parsing writes
 
+const REASON = /\b(?:because|karena|reason:|alasan:)\s*/i
+
 const parsePr = (s: AppState, convo: ConsoleConvo, raw: string, at: string): ConsoleTurn => {
-  const [ask, why] = raw.split(/\b(?:because|karena|reason:|alasan:)\s*/i)
+  const words = COPY.pr[langOf(convo)]
+  const [ask, why] = raw.split(REASON)
   const qty = Number(ask.match(/(?:^|\s)(\d+)(?=\s|$)/)?.[1] ?? 0)
-  const cleaned = ask.toLowerCase().replace(/\b(raise|create|make|buat|ajukan|a|pr|purchase|request|permintaan|pembelian|for|of|order|buy|beli|pesan|units?|pcs)\b/g, ' ')
+  const cleaned = ask.toLowerCase().replace(/\b(raise|create|make|buat|ajukan|a|pr|purchase|request|permintaan|pembelian|for|of|untuk|order|buy|beli|pesan|units?|pcs|buah)\b/g, ' ')
   const item = bestMatch(s.items.filter((i) => i.active), (i) => i.name, cleaned)
-  if (!item) return say(convo, 'Propose purchase request', ['read_stock'], { text: 'Which item? Name it as it appears in the item list, for example "raise a PR for 10 A4 paper".' })
-  if (!qty) return say(convo, 'Propose purchase request', ['read_stock'], { text: `How many ${item.name}? For example "raise a PR for 10 ${item.name}".` })
-  return propose(s, convo, { kind: 'pr', itemId: item.id, qty, reason: why?.trim() || 'Raised from the Jessy chat.' }, at)
+  if (!item) return say(convo, 'Propose purchase request', ['read_stock'], { text: words.which })
+  if (!qty) return say(convo, 'Propose purchase request', ['read_stock'], { text: words.howMany(item.name) })
+  return propose(s, convo, { kind: 'pr', itemId: item.id, qty, reason: why?.trim() || words.reason }, at)
 }
 
 const parseDecision = (s: AppState, convo: ConsoleConvo, raw: string, t: string, at: string): ConsoleTurn => {
+  const lang = langOf(convo)
   const decision = /^(approve|setujui|acc)\b/.test(t) ? 'approved' : 'rejected'
-  const note = raw.split(/\b(?:because|karena|reason:|alasan:)\s*/i)[1]?.trim() ?? ''
+  const note = raw.split(REASON)[1]?.trim() ?? ''
   const code = raw.match(CODE)?.[1]?.toUpperCase()
-  const mine = awaiting(s, convo.ctx)
+  const mine = awaiting(s, convo.ctx, lang)
   const row = code ? mine.find((r) => r.code === code) : bestMatch(mine, (r) => r.who, t.replace(/^(approve|reject|setujui|tolak|acc)\b/, ''))
   if (row) return propose(s, convo, { kind: 'decide', target: row.target, id: row.id, decision, note }, at)
   if (code) {
@@ -520,23 +1034,27 @@ const parseDecision = (s: AppState, convo: ConsoleConvo, raw: string, t: string,
         ? { type: 'prs/decide', id: pr.id, decision, note: note || '-', by: convo.ctx.userId }
         : null
     const blocker = action && blockerFor(s, action)
-    const text = !action ? `I cannot find a pending request with the code ${code}.` : blocker ? `I cannot do that: ${blocker}` : `${code} does not wait for you, so I cannot decide it for you.`
+    const words = COPY.decide[lang]
+    const text = !action ? words.notFound(code) : blocker ? COPY.cannot[lang](blocker) : words.notYours(code)
     return say(convo, 'Propose decision', ['read_approvals'], { text })
   }
-  if (!mine.length) return say(convo, 'Propose decision', ['read_approvals'], { text: 'Nothing waits for your approval right now.' })
+  const words = COPY.approvals[lang]
+  if (!mine.length) return say(convo, 'Propose decision', ['read_approvals'], { text: words.none })
   return say(convo, 'Propose decision', ['read_approvals'], {
-    text: ['Which one? These wait for you:', ...mine.map((r) => `• ${r.line}`)].join('\n'),
-    quick: mine.slice(0, 3).map((r) => `${decision === 'approved' ? 'Approve' : 'Reject'} ${r.code}`),
+    text: [words.which, ...mine.map((r) => `• ${r.line}`)].join('\n'),
+    quick: mine.slice(0, 3).map((r) => `${words.verb[decision]} ${r.code}`),
   })
 }
 
+const capitalise = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
 const parseAnnouncement = (s: AppState, convo: ConsoleConvo, raw: string, at: string): ConsoleTurn => {
   const rest = raw.replace(/^.*?\b(announce(?:ment)?|pengumuman|umumkan)\b\s*(?:that|:)?\s*/i, '').trim()
-  if (rest.length < 3) return say(convo, 'Propose announcement', [], { text: 'What should it say? For example: "announce Office closed Friday: The office closes at noon for maintenance."' })
+  if (rest.length < 3) return say(convo, 'Propose announcement', [], { text: COPY.announce[langOf(convo)].ask })
   const split = rest.indexOf(':')
   const title = (split > 0 ? rest.slice(0, split) : rest.split(/[.!?]/)[0]).trim().slice(0, 80)
   const body = (split > 0 ? rest.slice(split + 1) : rest).trim()
-  return propose(s, convo, { kind: 'announce', title: title.charAt(0).toUpperCase() + title.slice(1), body: body.charAt(0).toUpperCase() + body.slice(1) }, at)
+  return propose(s, convo, { kind: 'announce', title: capitalise(title), body: capitalise(body) }, at)
 }
 
 const TASK_WORDS: [TaskKind, RegExp][] = [
@@ -547,15 +1065,25 @@ const TASK_WORDS: [TaskKind, RegExp][] = [
 ]
 
 const parseTask = (s: AppState, convo: ConsoleConvo, raw: string, t: string, at: string): ConsoleTurn => {
+  const words = COPY.task[langOf(convo)]
   const code = raw.match(CODE)?.[1]?.toUpperCase()
-  const deal = code ? s.deals.find((d) => d.code === code) : bestMatch(s.deals.filter((d) => stageOf(s, d)?.kind === 'open'), (d) => d.title, t.replace(/\b(follow|up|task|tugas|deal|create|add|buat|tomorrow|today|besok|call|visit|whatsapp|email|on|for|with)\b/g, ' '))
-  if (!deal) return say(convo, 'Propose follow-up', ['read_sales'], { text: 'Which deal? Give the code or the buyer\'s name, for example "follow up DL-26-0041 tomorrow by call".' })
+  const deal = code ? s.deals.find((d) => d.code === code) : bestMatch(openDeals(s), (d) => d.title, t.replace(/\b(follow|up|task|tugas|deal|create|add|buat|tomorrow|today|besok|call|visit|whatsapp|email|on|for|with)\b/g, ' '))
+  if (!deal) return say(convo, 'Propose follow-up', ['read_sales'], { text: words.which })
   const taskKind = TASK_WORDS.find(([, re]) => re.test(t))?.[0] ?? 'todo'
   const days = Number(t.match(/\bin (\d+) days?\b|\b(\d+) hari lagi\b/)?.slice(1).find(Boolean) ?? (has(t, /\b(today|hari ini)\b/) ? 0 : 1))
   const dueAt = dayAt(at, days, days === 0 ? 16 : 10)
   const contact = s.contacts.find((c) => c.id === deal.contactId)?.name
-  const title = `Follow up ${contact ? `with ${contact}` : `on ${deal.title}`}`
-  return propose(s, convo, { kind: 'task', dealId: deal.id, title, taskKind, dueAt }, at)
+  return propose(s, convo, { kind: 'task', dealId: deal.id, title: contact ? words.name(contact) : words.onDeal(deal.title), taskKind, dueAt }, at)
+}
+
+/** Changes, matched before the reads so "beli 10 kertas" is a request rather than a stock question. */
+const parseWrite = (s: AppState, c: ConsoleConvo, raw: string, t: string, at: string): ConsoleTurn | null => {
+  if (has(t, /\b(check me in|clock me in|absen(?:kan)? saya|absen masuk)\b|^(please )?(check|clock) in\b/)) return propose(s, c, { kind: 'checkIn' }, at)
+  if (has(t, /^(approve|reject|setujui|tolak|acc)\b/)) return parseDecision(s, c, raw, t, at)
+  if (has(t, /\b(raise|create|make|buat|ajukan|order|buy|beli|pesan)\b.*\b(pr|purchase request|permintaan pembelian)\b|^(buy|beli|order|pesan)\b/)) return parsePr(s, c, raw, at)
+  if (has(t, /\b(announce|announcement|pengumuman|umumkan)\b/)) return parseAnnouncement(s, c, raw, at)
+  if (has(t, /\b(follow[- ]?up|tindak lanjut)\b|\b(task|tugas)\b.*\bdeal\b/)) return parseTask(s, c, raw, t, at)
+  return null
 }
 
 // ---------------------------------------------------------------- turn
@@ -564,185 +1092,41 @@ const READS: [RegExp, (s: AppState, convo: ConsoleConvo, t: string, at: string) 
   [/\b(leave balance|sisa cuti|cuti saya|my leave|leave left|leave days)\b/, (s, c, _t, at) => readLeave(s, c, at)],
   [/\b(approv\w*|persetujuan|waiting for me|waits for me|menunggu saya)\b/, (s, c) => readApprovals(s, c)],
   [/\b(who|siapa|attendance|absensi|kehadiran|hadir)\b.*|\b(late|telat|terlambat|on leave|cuti)\b.*\b(today|hari ini)\b/, readAttendance],
-  [/\b(stock|stok|inventory|persediaan|on hand)\b/, (s, c, t) => readStock(s, c, t)],
-  [/\b(sales|penjualan|won|deals?|pipeline|revenue|closing|omzet)\b/, readSales],
-  [/\b(overdue|invoices?|receivables?|piutang|tagihan|jatuh tempo)\b/, (s, c, _t, at) => readReceivables(s, c, at)],
+  [/\b(stock|stok|inventory|persediaan|on hand)\b/, readStock],
+  [/\b(sales|penjualan|won|deals?|pipeline|revenue|closing)\b/, readSales],
+  [/\b(invoices?|tagihan)\b/, (s, c, _t, at) => drillDown(s, c, 'finance', THIS_MONTH, at)],
   [/\b(exclusives?|eksklusif|exclusive rights?)\b/, (s, c, _t, at) => readExclusives(s, c, at)],
   [/\b(candidates?|kandidat|pelamar|applicants?|interview)\b/, readCandidate],
 ]
 
-// ---------------------------------------------------------------- reports
-
-/** A report: a title line, figure lines, and the report page to open for the full detail. */
-interface Report {
-  title: string
-  lines: string[]
-  link: RecordLink
-}
-
-const sumIdr = (n: number) => fmtIdrShort(Math.round(n))
-const within = (iso: string | null | undefined, p: { from: Date; to: Date }) => !!iso && toMs(iso) >= p.from.getTime() && toMs(iso) < p.to.getTime()
-
-const salesReport = (s: AppState, t: string, at: string): Report => {
-  const p = periodOf(t, at)
-  const won = s.deals.filter((d) => stageOf(s, d)?.kind === 'won' && within(d.closedAt, p))
-  const open = s.deals.filter((d) => stageOf(s, d)?.kind === 'open')
-  const byAgent = new Map<string, number>()
-  for (const d of won) byAgent.set(d.ownerId, (byAgent.get(d.ownerId) ?? 0) + d.value)
-  const top = [...byAgent].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id, v]) => `${s.users.find((u) => u.id === id)?.name ?? id} ${sumIdr(v)}`)
-  return {
-    title: `Sales report, ${p.label}`,
-    lines: [
-      `Won: ${plural(won.length, 'deal')}, ${sumIdr(won.reduce((n, d) => n + d.value, 0))}`,
-      `Open pipeline: ${plural(open.length, 'deal')}, ${sumIdr(open.reduce((n, d) => n + d.value, 0))}`,
-      top.length ? `Top agents: ${top.join(', ')}` : 'No agent closed a deal in this period.',
-    ],
-    link: { kind: 'report', id: 'sales', label: 'Open sales reports' },
-  }
-}
-
-const financeReport = (s: AppState, t: string, at: string): Report => {
-  const p = periodOf(t, at)
-  const is = incomeStatement(s, p.from.toISOString(), p.to.toISOString())
-  // The first aging bucket is "not yet due"; everything after it is past due.
-  const aging = receivableAging(s, toMs(at))
-  const overdue = aging.total - aging.totals[0]
-  return {
-    title: `Finance report, ${p.label}`,
-    lines: [`Revenue: ${sumIdr(is.totalRevenue)}`, `Expenses: ${sumIdr(is.totalExpense)}`, `Net income: ${sumIdr(is.netIncome)}`, `Receivables past due: ${sumIdr(overdue)}`],
-    link: { kind: 'report', id: 'finance', label: 'Open finance reports' },
-  }
-}
-
-const inventoryReport = (s: AppState): Report => {
-  const value = valuation(s).reduce((n, r) => n + r.value, 0)
-  const low = lowStock(s)
-  return {
-    title: 'Stock report',
-    lines: [
-      `Stock value at average cost: ${sumIdr(value)}`,
-      `Items in stock: ${valuation(s).length}`,
-      low.length ? `Below minimum: ${low.slice(0, 5).map((r) => r.item.name).join(', ')}${low.length > 5 ? ` and ${low.length - 5} more` : ''}` : 'No item is below its minimum.',
-    ],
-    link: { kind: 'report', id: 'purchasing', label: 'Open purchasing reports' },
-  }
-}
-
-const purchasingReport = (s: AppState, t: string, at: string): Report => {
-  const p = periodOf(t, at)
-  const sent = s.purchaseOrders.filter((po) => within(po.sentAt, p))
-  const open = s.purchaseOrders.filter((po) => po.status === 'sent' || po.status === 'partial')
-  const late = open.filter((po) => isPoLate(po, toMs(at)))
-  const waiting = s.purchaseRequests.filter((r) => r.status === 'pending')
-  return {
-    title: `Purchasing report, ${p.label}`,
-    lines: [
-      `Spend on orders sent: ${sumIdr(sent.reduce((n, po) => n + poTotals(po).total, 0))} across ${plural(sent.length, 'order')}`,
-      `Open orders: ${open.length}, of which ${late.length} late`,
-      `Requests waiting for approval: ${waiting.length}`,
-    ],
-    link: { kind: 'report', id: 'purchasing', label: 'Open purchasing reports' },
-  }
-}
-
-const peopleReport = (s: AppState, at: string): Report => {
-  const today = ymd(at)
-  const now = toMs(at)
-  const staff = currentEmployees(s)
-  const count = (st: AttendanceState) => staff.filter((e) => attendanceState(s, e.id, today, now) === st).length
-  return {
-    title: 'People report, today',
-    lines: [
-      `Headcount: ${staff.length} across ${plural(s.departments.length, 'department')}`,
-      `Today: ${count('present')} on time, ${count('late')} late, ${count('leave')} on leave, ${count('absent')} absent`,
-      `Open requests: ${s.hrRequests.filter((r) => r.status === 'pending').length} leave, overtime or loan`,
-    ],
-    link: { kind: 'report', id: 'people', label: 'Open people reports' },
-  }
-}
-
-const listingsReport = (s: AppState): Report => {
-  const by = (st: string) => s.listings.filter((l) => l.status === st).length
-  return {
-    title: 'Listing report',
-    lines: [`Live: ${by('active')}, reserved: ${by('reserved')}, in review: ${by('review')}`, `Sold: ${by('sold')}, delisted: ${by('delisted')}`, `Value of live listings: ${sumIdr(s.listings.filter((l) => l.status === 'active').reduce((n, l) => n + l.price, 0))}`],
-    link: { kind: 'report', id: 'listings', label: 'Open listings' },
-  }
-}
-
-const leadsReport = (s: AppState, t: string, at: string): Report => {
-  const p = periodOf(t, at)
-  const fresh = s.inquiries.filter((i) => within(i.createdAt, p))
-  const stages = ['new', 'contacted', 'survey', 'negotiation', 'won', 'lost'].map((st) => `${st} ${s.inquiries.filter((i) => i.status === st).length}`)
-  return {
-    title: `Lead report, ${p.label}`,
-    lines: [`New inquiries: ${fresh.length}`, `All inquiries by stage: ${stages.join(', ')}`],
-    link: { kind: 'report', id: 'leads', label: 'Open inquiries' },
-  }
-}
-
-type ReportKind = 'sales' | 'finance' | 'inventory' | 'purchasing' | 'people' | 'listings' | 'leads'
-
-const REPORTS: { kind: ReportKind; words: RegExp; needs: Permission; what: string; build: (s: AppState, t: string, at: string) => Report }[] = [
-  { kind: 'sales', words: /\b(sales|penjualan|deals?|closing|omzet)\b/, needs: 'deal.view', what: 'sales', build: salesReport },
-  { kind: 'finance', words: /\b(finance|keuangan|laba|rugi|profit|income|revenue|pendapatan|expenses?|biaya)\b/, needs: 'finance.view', what: 'finance figures', build: financeReport },
-  { kind: 'inventory', words: /\b(stock|stok|inventory|persediaan|gudang)\b/, needs: 'purchase.view', what: 'stock', build: (s) => inventoryReport(s) },
-  { kind: 'purchasing', words: /\b(purchas\w*|pembelian|po|orders?|pengadaan|spend)\b/, needs: 'purchase.view', what: 'purchasing', build: purchasingReport },
-  { kind: 'people', words: /\b(people|sdm|hr|karyawan|employees?|pegawai|absensi|kehadiran)\b/, needs: 'hr.view', what: 'people data', build: (s, _t, at) => peopleReport(s, at) },
-  { kind: 'listings', words: /\b(listings?|properti|property|properties|aset)\b/, needs: 'listing.view', what: 'listings', build: (s) => listingsReport(s) },
-  { kind: 'leads', words: /\b(leads?|inquir\w*|prospek|pertanyaan|calon pembeli)\b/, needs: 'inquiry.view', what: 'inquiries', build: leadsReport },
-]
-
-const REPORT_WORD = /\b(report|reports|laporan|ringkasan|summary|rekap|recap|overview|dashboard)\b/
-
-const toReply = (r: Report): ConsoleReply => ({ text: [r.title + ':', ...r.lines.map((l) => `• ${l}`)].join('\n'), links: [r.link] })
-
-/** One report by topic, or the dashboard summary: one figure line per module the role can see. */
-const readReport = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
-  const asked = REPORTS.filter((r) => r.words.test(t))
-  if (asked.length) {
-    const allowed = asked.filter((r) => can(convo.ctx, r.needs))
-    if (!allowed.length) return refuse(convo, asked[0].needs, asked[0].what, 'Read report')
-    return say(convo, 'Read report', ['read_reports'], ...allowed.map((r) => toReply(r.build(s, t, at))))
-  }
-  const lines = REPORTS.filter((r) => can(convo.ctx, r.needs) && r.kind !== 'purchasing').map((r) => {
-    const rep = r.build(s, t, at)
-    return `${rep.title.split(',')[0]}: ${rep.lines[0]}`
-  })
-  const waiting = requestsAwaiting(s, convo.ctx.userId, can(convo.ctx, 'request.approve')).length + prsAwaiting(s, convo.ctx.userId, can(convo.ctx, 'purchase.approve')).length
-  return say(convo, 'Read report', ['read_reports'], {
-    text: ['Dashboard summary:', ...lines.map((l) => `• ${l}`), `• Waiting for your approval: ${waiting}`, 'Ask for any of these as a full report, for example "laporan penjualan bulan lalu".'].join('\n'),
-    links: [{ kind: 'report', id: 'dashboard', label: 'Open the dashboard' }],
-    quick: ['Laporan penjualan bulan ini', 'Laporan keuangan bulan ini', 'Laporan stok'],
-  })
+/** Everything after the guard and small talk, in order: follow-ups, reports, changes, metrics, reads. */
+const route = (s: AppState, c: ConsoleConvo, raw: string, t: string, at: string): ConsoleTurn => {
+  const lang = langOf(c)
+  if ((INTENT.confirm.test(t) || INTENT.cancel.test(t)) && t.split(/\s+/).length <= 3) return say(c, 'Chat turn', [], { text: COPY.noChange[lang] })
+  if (INTENT.help.test(t)) return help(c)
+  const answer = followUp(s, c, t, at) ?? (INTENT.report.test(t) ? readReport(s, c, t, at) : null) ?? parseWrite(s, c, raw, t, at) ?? readMetric(s, c, t, at)
+  if (answer) return answer
+  for (const [re, read] of READS) if (re.test(t)) return read(s, c, t, at)
+  // A bare name may be a candidate.
+  if (bestMatch(s.candidates, (x) => x.name, t)) return readCandidate(s, c, t, at)
+  return say(c, 'Chat turn', [], { text: COPY.fallback[lang], quick: contextQuick(c, at) })
 }
 
 const consoleStep = (s: AppState, convo: ConsoleConvo, raw: string, at: string): ConsoleTurn => {
   const text = raw.trim()
   const t = text.toLowerCase()
+  const lang = detectLang(text, langOf(convo))
+  const here: ConsoleConvo = { ...convo, lang }
 
-  if (convo.pending) {
-    if (CONFIRM.test(t)) return confirm(s, convo, convo.pending, at)
-    if (CANCEL.test(t)) return say({ ...convo, pending: null }, 'Cancel change', [], { text: 'Cancelled. Nothing changed.', quick: starters(convo.ctx) })
+  if (here.pending) {
+    if (INTENT.cancel.test(t)) return say({ ...here, pending: null }, 'Cancel change', [], { text: COPY.cancelled[lang], quick: contextQuick(here, at) })
+    if (INTENT.confirm.test(t)) return confirm(s, here, here.pending, at)
   }
-  const c: ConsoleConvo = { ...convo, pending: null }
+  const c: ConsoleConvo = { ...here, pending: null }
   const guard = guardMessage(text, 'console')
-  if (guard) return say(c, GUARD_PURPOSE, [], { text: guardReply(guard, 'console', text), quick: starters(c.ctx) })
-  if (CONFIRM.test(t) || CANCEL.test(t)) return say(c, 'Chat turn', [], { text: 'There is no change waiting. Ask me something, or type "help".' })
-  if (has(t, /^(help|bantuan|menu|what can you do|apa yang bisa)/)) return help(c)
-  if (REPORT_WORD.test(t)) return readReport(s, c, t, at)
-
-  if (has(t, /\b(check me in|clock me in|absen(?:kan)? saya|absen masuk)\b|^(please )?(check|clock) in\b/)) return propose(s, c, { kind: 'checkIn' }, at)
-  if (has(t, /^(approve|reject|setujui|tolak|acc)\b/)) return parseDecision(s, c, text, t, at)
-  if (has(t, /\b(raise|create|make|buat|ajukan|order|buy|beli|pesan)\b.*\b(pr|purchase request|permintaan pembelian)\b|^(buy|beli|order|pesan)\b/)) return parsePr(s, c, text, at)
-  if (has(t, /\b(announce|announcement|pengumuman|umumkan)\b/)) return parseAnnouncement(s, c, text, at)
-  if (has(t, /\b(follow[- ]?up|tindak lanjut)\b|\b(task|tugas)\b.*\bdeal\b/)) return parseTask(s, c, text, t, at)
-
-  for (const [re, read] of READS) if (re.test(t)) return read(s, c, t, at)
-  // A bare name may be a candidate.
-  if (bestMatch(s.candidates, (x) => x.name, t)) return readCandidate(s, c, t, at)
-
-  return say(c, 'Chat turn', [], { text: 'I did not catch that. Type "help" to see what I can do, or pick one of these.', quick: starters(c.ctx) })
+  if (guard) return say(c, GUARD_PURPOSE, [], { text: guardReply(guard, 'console', text, lang), quick: starters(c.ctx, lang) })
+  const talk = smallTalk(s, c, t, at)
+  return 'rest' in talk ? route(s, c, text, talk.rest, at) : talk
 }
 
 export const consoleTurn: Engine<ConsoleConvo> = (s, convo, raw, at) => consoleStep(s, convo, raw, at)

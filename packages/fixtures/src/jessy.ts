@@ -24,7 +24,7 @@ export interface Reply {
   /** Shows the listing review card while this is the latest reply. */
   review?: boolean
   /** Console assistant: a change waiting for the member's Confirm, listed line by line. */
-  proposal?: { title: string; lines: string[] }
+  proposal?: { title: string; lines: string[]; confirm?: string; cancel?: string }
 }
 
 /** What the gateway logs for one turn: purpose, tools beyond the dispatched actions, the subject and facts to remember. */

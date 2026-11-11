@@ -180,17 +180,17 @@ export function JessyChat({
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         type="button"
-                        onClick={() => submit('Confirm')}
+                        onClick={() => submit(m.proposal!.confirm ?? 'Confirm')}
                         className={cn('h-9 rounded-full bg-accent-strong px-4 text-xs font-semibold text-white transition-colors hover:bg-accent-dark', FOCUS)}
                       >
-                        Confirm
+                        {m.proposal.confirm ?? 'Confirm'}
                       </button>
                       <button
                         type="button"
-                        onClick={() => submit('Cancel')}
+                        onClick={() => submit(m.proposal!.cancel ?? 'Cancel')}
                         className={cn('h-9 rounded-full bg-surface px-4 text-xs font-semibold text-body transition-colors hover:bg-surface-2', FOCUS)}
                       >
-                        Cancel
+                        {m.proposal.cancel ?? 'Cancel'}
                       </button>
                     </div>
                   )}

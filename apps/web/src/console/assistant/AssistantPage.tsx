@@ -14,7 +14,7 @@ export function AssistantPage() {
         className="mb-0"
       />
       <Card className="overflow-hidden p-0">
-        <ConsoleJessyChat chat={chat} className="h-[calc(100dvh-16rem)] min-h-[420px]" />
+        <ConsoleJessyChat chat={chat} className="h-[calc(100dvh-25rem)] min-h-[340px] md:h-[calc(100dvh-16rem)] md:min-h-[420px]" />
       </Card>
     </div>
   )
