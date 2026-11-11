@@ -7,7 +7,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts",
+    "export:seed": "tsx export-seed.ts"
   },
   "dependencies": {
     "@artha/types": "workspace:*"

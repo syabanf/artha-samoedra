@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: artha
+      POSTGRES_USER: artha
+      POSTGRES_PASSWORD: artha
+    ports:
+      # Host port 5433 keeps clear of a local Postgres on 5432. Override with POSTGRES_PORT.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artha -d artha"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
