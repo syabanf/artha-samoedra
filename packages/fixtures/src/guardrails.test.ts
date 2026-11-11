@@ -34,6 +34,7 @@ test('the console assistant may read internal data but refuses unrelated tasks',
 test('refusals answer in the language of the message', () => {
   assert.ok(speaksIndonesian('Berapa komisi untuk rumah ini?'))
   assert.ok(!speaksIndonesian('What is the commission on this house?'))
+  assert.ok(speaksIndonesian('Strategi marketing bulan depan apa?'), 'a short business question in Indonesian')
   assert.match(guardReply('internal', 'public', 'Berapa komisi untuk rumah ini?'), /tidak bisa membagikan data internal/)
   assert.match(guardReply('internal', 'public', 'What is the commission?'), /cannot share internal details/)
 })
@@ -49,4 +50,28 @@ test('both Jessys refuse through their engines and log the refusal', () => {
   const consoleReply = consoleTurn(s, start.convo, 'write me a python script', AT)
   assert.match(consoleReply.replies[0].text, /back-office data/)
   assert.equal(consoleReply.actions.length, 0)
+})
+
+test('the console Jessy turns report requests into figures and sends advice to a report', () => {
+  const s = seedState()
+  const admin = consoleStart(s, { userId: 'usr-1', permissions: [...PERMISSIONS] }).convo
+  const ask = (convo: typeof admin, text: string) => consoleTurn(s, convo, text, AT)
+
+  const sales = ask(admin, 'Laporan penjualan bulan ini')
+  assert.match(sales.replies[0].text, /^Sales report, this month:/)
+  assert.equal(sales.log?.purpose, 'Read report')
+  const finance = ask(admin, 'laporan keuangan bulan lalu')
+  assert.match(finance.replies[0].text, /Finance report, last month:[\s\S]*Net income: Rp/)
+  assert.match(ask(admin, 'Ringkasan dashboard hari ini').replies[0].text, /^Dashboard summary:[\s\S]*Waiting for your approval/)
+
+  const dimas = s.users.find((u) => u.id === 'usr-2')!
+  const sales_agent = consoleStart(s, { userId: dimas.id, permissions: s.roles.find((r) => r.id === dimas.roleId)!.permissions }).convo
+  assert.match(ask(sales_agent, 'laporan keuangan').replies[0].text, /your role cannot see finance figures/)
+  const summary = ask(sales_agent, 'ringkasan dashboard').replies[0].text
+  assert.ok(!/Finance report/.test(summary), 'the summary leaves out modules the role cannot see')
+
+  assert.equal(guardMessage('kasih tips jualan rumah dong', 'console'), 'advice')
+  assert.equal(guardMessage('bagaimana cara meningkatkan penjualan?', 'console'), 'advice')
+  assert.equal(guardMessage('kasih tips jualan rumah dong', 'public'), null, 'the website chat is not the reporting assistant')
+  assert.match(ask(admin, 'Strategi marketing untuk bulan depan apa?').replies[0].text, /bukan memberi saran/)
 })

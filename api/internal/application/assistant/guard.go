@@ -29,7 +29,14 @@ var offTopic = []*regexp.Regexp{
 	regexp.MustCompile(`\b(diagnos\w*|obat|medicine|symptom|gejala|legal advice|nasihat hukum)\b`),
 }
 
-var idWords = regexp.MustCompile(`\b(apa|yang|saya|aku|berapa|bisa|tolong|dong|ada|mau|cari|gimana|bagaimana|kamu|tidak|nggak|gak|ini|itu|untuk|dengan|rumah|tanah|nomor|pemilik|harga|lokasi|sewa|jual|minta|kasih|tulis|buatkan|bikin)\b`)
+// advice turns strategy and tips questions into a report request: Jessy reports, she does not advise.
+var advice = []*regexp.Regexp{
+	regexp.MustCompile(`\b(tips|strategi|strategy|strategies|saran|advice|motivasi|motivation)\b`),
+	regexp.MustCompile(`\b(ide|ideas?)\b.{0,15}\b(konten|content|promosi|promotion|marketing|caption|iklan)\b`),
+	regexp.MustCompile(`\b(bagaimana|gimana|how)\b.{0,15}\b(cara|can|do|to)\b.{0,15}\b(meningkatkan|naikkan|jual|menjual|jualan|sell|market|improve|increase|grow|boost)\b`),
+}
+
+var idWords = regexp.MustCompile(`\b(apa|yang|saya|aku|berapa|bisa|tolong|dong|ada|mau|cari|gimana|bagaimana|kamu|tidak|nggak|gak|ini|itu|untuk|dengan|rumah|tanah|nomor|pemilik|harga|lokasi|sewa|jual|minta|kasih|tulis|buatkan|bikin|bulan|depan|minggu|hari|tahun|laporan|penjualan|jualan|strategi|saran|ringkasan|keuangan|stok|karyawan|kenapa|mengapa|sudah|belum)\b`)
 
 // guard returns the refusal for a message Jessy must not handle, or "" when she may answer it.
 func guard(text string) string {
@@ -45,6 +52,12 @@ func guard(text string) string {
 		if re.MatchString(t) {
 			return pick("I cannot change how I work. I answer from the console data your role may see, and every change waits for your Confirm.",
 				"Saya tidak bisa mengubah cara kerja saya. Saya menjawab dari data konsol sesuai akses peran Anda, dan setiap perubahan menunggu Confirm dari Anda.")
+		}
+	}
+	for _, re := range advice {
+		if re.MatchString(t) {
+			return pick("I report on the data in your dashboard rather than give advice. Ask for a report, such as \"sales report this month\" or \"stock report\", and use the figures to decide.",
+				"Saya membuat laporan dari data di dashboard, bukan memberi saran. Minta laporan, misalnya \"laporan penjualan bulan ini\" atau \"laporan stok\", lalu gunakan angkanya untuk memutuskan.")
 		}
 	}
 	for _, re := range offTopic {

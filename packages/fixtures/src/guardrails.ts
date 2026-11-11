@@ -7,7 +7,7 @@
  */
 
 export type JessyAudience = 'public' | 'console'
-export type GuardKind = 'too_long' | 'injection' | 'internal' | 'off_topic'
+export type GuardKind = 'too_long' | 'injection' | 'internal' | 'off_topic' | 'advice'
 
 export const MAX_MESSAGE_CHARS = 1000
 
@@ -43,6 +43,13 @@ const OFF_TOPIC = [
   /\b(diagnos\w*|obat|medicine|symptom|gejala|legal advice|nasihat hukum)\b/,
 ]
 
+/** The console Jessy reports on data; advice and strategy questions go to a report instead. */
+const ADVICE = [
+  /\b(tips|strategi|strategy|strategies|saran|advice|rekomendasi strategi|motivasi|motivation)\b/,
+  /\b(ide|ideas?)\b.{0,15}\b(konten|content|promosi|promotion|marketing|caption|iklan)\b/,
+  /\b(bagaimana|gimana|how)\b.{0,15}\b(cara|can|do|to)\b.{0,15}\b(meningkatkan|naikkan|jual|menjual|jualan|sell|market|improve|increase|grow|boost)\b/,
+]
+
 const fold = (t: string) => t.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
 
 /** The guard that refuses this message, or null when Jessy may answer it. */
@@ -51,11 +58,12 @@ export function guardMessage(text: string, audience: JessyAudience): GuardKind |
   const t = fold(text)
   if (INJECTION.some((re) => re.test(t))) return 'injection'
   if (audience === 'public' && INTERNAL.some((re) => re.test(t))) return 'internal'
+  if (audience === 'console' && ADVICE.some((re) => re.test(t))) return 'advice'
   if (OFF_TOPIC.some((re) => re.test(t))) return 'off_topic'
   return null
 }
 
-const ID_WORDS = /\b(apa|yang|saya|aku|berapa|bisa|tolong|dong|ada|mau|cari|gimana|bagaimana|kamu|tidak|nggak|gak|ini|itu|untuk|dengan|rumah|tanah|nomor|pemilik|harga|lokasi|sewa|jual|minta|kasih|tulis|buatkan|bikin)\b/
+const ID_WORDS = /\b(apa|yang|saya|aku|berapa|bisa|tolong|dong|ada|mau|cari|gimana|bagaimana|kamu|tidak|nggak|gak|ini|itu|untuk|dengan|rumah|tanah|nomor|pemilik|harga|lokasi|sewa|jual|minta|kasih|tulis|buatkan|bikin|bulan|depan|minggu|hari|tahun|laporan|penjualan|jualan|strategi|saran|ringkasan|keuangan|stok|karyawan|kenapa|mengapa|sudah|belum)\b/
 
 /** Indonesian when the message reads Indonesian, English otherwise. */
 export const speaksIndonesian = (text: string) => (fold(text).match(new RegExp(ID_WORDS, 'g'))?.length ?? 0) >= 2
@@ -66,17 +74,21 @@ const REFUSAL: Record<JessyAudience, Record<GuardKind, [en: string, id: string]>
     injection: ['I can only help with our properties: finding one, explaining a listing, or booking a site visit.', 'Saya hanya bisa membantu soal properti kami: mencari properti, menjelaskan listing, atau menjadwalkan survei lokasi.'],
     internal: ['I cannot share internal details such as commissions, owner contacts or other customers. I can tell you the price, size, certificate and location of any listing, or connect you with an agent.', 'Saya tidak bisa membagikan data internal seperti komisi, kontak pemilik, atau data pelanggan lain. Saya bisa menjelaskan harga, luas, sertifikat, dan lokasi listing, atau menghubungkan Anda dengan agen.'],
     off_topic: ['I am the property assistant of Artha Samoedra, so I only answer questions about our properties and site visits.', 'Saya asisten properti Artha Samoedra, jadi saya hanya menjawab pertanyaan seputar properti kami dan jadwal survei.'],
+    advice: ['', ''],
   },
   console: {
     too_long: [`That message is longer than ${MAX_MESSAGE_CHARS} characters. Ask one question at a time.`, `Pesan itu lebih dari ${MAX_MESSAGE_CHARS} karakter. Ajukan satu pertanyaan sekali kirim.`],
     injection: ['I cannot change how I work. I answer from the console data your role may see, and every change waits for your Confirm.', 'Saya tidak bisa mengubah cara kerja saya. Saya menjawab dari data konsol sesuai akses peran Anda, dan setiap perubahan menunggu Confirm dari Anda.'],
     internal: ['', ''],
+    advice: ['I report on the data in your dashboard rather than give advice. Ask for a report, such as "sales report this month" or "stock report", and use the figures to decide.', 'Saya membuat laporan dari data di dashboard, bukan memberi saran. Minta laporan, misalnya "laporan penjualan bulan ini" atau "laporan stok", lalu gunakan angkanya untuk memutuskan.'],
     off_topic: ['I only answer questions about Artha Samoedra back-office data: listings, sales, finance, people, purchasing and approvals. Type "help" to see what I can do.', 'Saya hanya menjawab pertanyaan seputar data back office Artha Samoedra: listing, penjualan, keuangan, SDM, pembelian, dan approval. Ketik "help" untuk melihat apa yang bisa saya bantu.'],
   },
 }
 
 /** The sentence Jessy answers with when a guard refuses, in the customer's language. */
-export const guardReply = (kind: GuardKind, audience: JessyAudience, text: string) => REFUSAL[audience][kind][speaksIndonesian(text) ? 1 : 0]
+/** `lang` lets a chat that already knows the customer's language keep it; otherwise the text decides. */
+export const guardReply = (kind: GuardKind, audience: JessyAudience, text: string, lang?: 'id' | 'en') =>
+  REFUSAL[audience][kind][(lang ?? (speaksIndonesian(text) ? 'id' : 'en')) === 'id' ? 1 : 0]
 
 /** Purpose logged in the AI gateway, so refusals show up in Jessy's usage log. */
 export const GUARD_PURPOSE = 'Guardrail refusal'

@@ -8,11 +8,11 @@ import { CANDIDATE_STAGE_LABEL, PERMISSION_GROUPS, TASK_KIND_LABEL } from '@arth
 import { DAY, toMs } from './clock'
 import { stageOf } from './crm'
 import { daysLeft, exclusiveState } from './exclusives'
-import { agingBucket, customerName, invoiceTotals, receivableAging } from './finance'
+import { agingBucket, customerName, incomeStatement, invoiceTotals, receivableAging } from './finance'
 import { fmtDate, fmtDateTime, fmtIdrShort, fmtTime, newId } from './format'
 import { attendanceState, buildCheckIn, currentEmployees, currentStep, employeeName, employeeOfUser, leaveBalance, requestsAwaiting, shiftOn, ymd } from './hr'
 import type { Engine, Reply, Turn } from './jessy'
-import { bestPrice, fmtQty, lowStock, nextPrCode, onHand, prsAwaiting, prTotal, stockByWarehouse } from './purchasing'
+import { bestPrice, fmtQty, isPoLate, lowStock, nextPrCode, onHand, poTotals, prsAwaiting, prTotal, stockByWarehouse, valuation } from './purchasing'
 import type { AppAction, AppState } from './store'
 import { blockerFor, reduce } from './store'
 import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
@@ -23,7 +23,8 @@ export interface ConsoleCtx {
 }
 
 /** A record an answer points at; the web maps the kind to a console path. */
-export type RecordLinkKind = 'attendance' | 'item' | 'stock' | 'deal' | 'pipeline' | 'candidate' | 'hrRequest' | 'pr' | 'quotation' | 'invoice' | 'listing' | 'exclusives' | 'announcements' | 'followUps' | 'approvals' | 'meRequests' | 'me'
+/** `report` links take a report key as id: dashboard, sales, finance, purchasing, people, listings or leads. */
+export type RecordLinkKind = 'report' | 'attendance' | 'item' | 'stock' | 'deal' | 'pipeline' | 'candidate' | 'hrRequest' | 'pr' | 'quotation' | 'invoice' | 'listing' | 'exclusives' | 'announcements' | 'followUps' | 'approvals' | 'meRequests' | 'me'
 
 export interface RecordLink {
   kind: RecordLinkKind
@@ -101,6 +102,12 @@ interface Ability {
 }
 
 const ABILITIES: Ability[] = [
+  { needs: null, line: 'A dashboard summary of everything your role can see', starter: 'Ringkasan dashboard hari ini' },
+  { needs: 'deal.view', line: 'A sales report: deals won, value, top agents and the open pipeline', starter: 'Laporan penjualan bulan ini' },
+  { needs: 'finance.view', line: 'A finance report: revenue, expenses, net income and overdue invoices', starter: 'Laporan keuangan bulan ini' },
+  { needs: 'purchase.view', line: 'Purchasing and stock reports: spend, open and late orders, stock value, low stock', starter: 'Laporan stok' },
+  { needs: 'hr.view', line: 'A people report: headcount, today\'s attendance and open requests', starter: 'Laporan SDM' },
+  { needs: 'listing.view', line: 'Listing and lead reports: listings by status, new inquiries and their stages', starter: 'Laporan listing' },
   { needs: 'hr.view', line: 'Who is in, late or on leave today, by department', starter: 'Who is late today?' },
   { needs: 'purchase.view', line: 'Low stock, and the stock of a named item', starter: 'What is low on stock?' },
   { needs: 'deal.view', line: 'Won deals this month, last month or this quarter, and the pipeline by stage', starter: 'Sales this month' },
@@ -117,7 +124,7 @@ const ABILITIES: Ability[] = [
 ]
 
 const abilitiesFor = (ctx: ConsoleCtx) => ABILITIES.filter((a) => !a.needs || can(ctx, a.needs))
-const starters = (ctx: ConsoleCtx) => abilitiesFor(ctx).map((a) => a.starter).filter(Boolean).slice(0, 5)
+const starters = (ctx: ConsoleCtx) => abilitiesFor(ctx).map((a) => a.starter).filter(Boolean).slice(0, 4)
 
 export const consoleStart = (s: AppState, ctx: ConsoleCtx): Turn<ConsoleConvo> => {
   const name = s.users.find((u) => u.id === ctx.userId)?.name ?? 'there'
@@ -126,7 +133,7 @@ export const consoleStart = (s: AppState, ctx: ConsoleCtx): Turn<ConsoleConvo> =
     actions: [],
     replies: [
       {
-        text: `Hi ${firstName(name)}, I am ${s.settings.agentName}. I answer from live data and make changes for you after you confirm them. Ask me something, or type "help" to see what I can do.`,
+        text: `Hi ${firstName(name)}, I am ${s.settings.agentName}. Ask me for a report or about any figure on your dashboard, and I answer from live data. I can also prepare a change for you to confirm. Type "help" to see everything.`,
         quick: starters(ctx),
       },
     ],
@@ -135,7 +142,7 @@ export const consoleStart = (s: AppState, ctx: ConsoleCtx): Turn<ConsoleConvo> =
 
 const help = (convo: ConsoleConvo): ConsoleTurn => {
   const mine = abilitiesFor(convo.ctx)
-  const text = ['Here is what I can do for your role:', ...mine.map((a) => `• ${a.line}`), 'I always show a change first and run it only after you tap Confirm.'].join('\n')
+  const text = ['Here is what I can do for your role. Reports first:', ...mine.map((a) => `• ${a.line}`), 'I always show a change first and run it only after you tap Confirm.'].join('\n')
   return say(convo, 'Help', [], { text, quick: starters(convo.ctx) })
 }
 
@@ -564,6 +571,152 @@ const READS: [RegExp, (s: AppState, convo: ConsoleConvo, t: string, at: string) 
   [/\b(candidates?|kandidat|pelamar|applicants?|interview)\b/, readCandidate],
 ]
 
+// ---------------------------------------------------------------- reports
+
+/** A report: a title line, figure lines, and the report page to open for the full detail. */
+interface Report {
+  title: string
+  lines: string[]
+  link: RecordLink
+}
+
+const sumIdr = (n: number) => fmtIdrShort(Math.round(n))
+const within = (iso: string | null | undefined, p: { from: Date; to: Date }) => !!iso && toMs(iso) >= p.from.getTime() && toMs(iso) < p.to.getTime()
+
+const salesReport = (s: AppState, t: string, at: string): Report => {
+  const p = periodOf(t, at)
+  const won = s.deals.filter((d) => stageOf(s, d)?.kind === 'won' && within(d.closedAt, p))
+  const open = s.deals.filter((d) => stageOf(s, d)?.kind === 'open')
+  const byAgent = new Map<string, number>()
+  for (const d of won) byAgent.set(d.ownerId, (byAgent.get(d.ownerId) ?? 0) + d.value)
+  const top = [...byAgent].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id, v]) => `${s.users.find((u) => u.id === id)?.name ?? id} ${sumIdr(v)}`)
+  return {
+    title: `Sales report, ${p.label}`,
+    lines: [
+      `Won: ${plural(won.length, 'deal')}, ${sumIdr(won.reduce((n, d) => n + d.value, 0))}`,
+      `Open pipeline: ${plural(open.length, 'deal')}, ${sumIdr(open.reduce((n, d) => n + d.value, 0))}`,
+      top.length ? `Top agents: ${top.join(', ')}` : 'No agent closed a deal in this period.',
+    ],
+    link: { kind: 'report', id: 'sales', label: 'Open sales reports' },
+  }
+}
+
+const financeReport = (s: AppState, t: string, at: string): Report => {
+  const p = periodOf(t, at)
+  const is = incomeStatement(s, p.from.toISOString(), p.to.toISOString())
+  // The first aging bucket is "not yet due"; everything after it is past due.
+  const aging = receivableAging(s, toMs(at))
+  const overdue = aging.total - aging.totals[0]
+  return {
+    title: `Finance report, ${p.label}`,
+    lines: [`Revenue: ${sumIdr(is.totalRevenue)}`, `Expenses: ${sumIdr(is.totalExpense)}`, `Net income: ${sumIdr(is.netIncome)}`, `Receivables past due: ${sumIdr(overdue)}`],
+    link: { kind: 'report', id: 'finance', label: 'Open finance reports' },
+  }
+}
+
+const inventoryReport = (s: AppState): Report => {
+  const value = valuation(s).reduce((n, r) => n + r.value, 0)
+  const low = lowStock(s)
+  return {
+    title: 'Stock report',
+    lines: [
+      `Stock value at average cost: ${sumIdr(value)}`,
+      `Items in stock: ${valuation(s).length}`,
+      low.length ? `Below minimum: ${low.slice(0, 5).map((r) => r.item.name).join(', ')}${low.length > 5 ? ` and ${low.length - 5} more` : ''}` : 'No item is below its minimum.',
+    ],
+    link: { kind: 'report', id: 'purchasing', label: 'Open purchasing reports' },
+  }
+}
+
+const purchasingReport = (s: AppState, t: string, at: string): Report => {
+  const p = periodOf(t, at)
+  const sent = s.purchaseOrders.filter((po) => within(po.sentAt, p))
+  const open = s.purchaseOrders.filter((po) => po.status === 'sent' || po.status === 'partial')
+  const late = open.filter((po) => isPoLate(po, toMs(at)))
+  const waiting = s.purchaseRequests.filter((r) => r.status === 'pending')
+  return {
+    title: `Purchasing report, ${p.label}`,
+    lines: [
+      `Spend on orders sent: ${sumIdr(sent.reduce((n, po) => n + poTotals(po).total, 0))} across ${plural(sent.length, 'order')}`,
+      `Open orders: ${open.length}, of which ${late.length} late`,
+      `Requests waiting for approval: ${waiting.length}`,
+    ],
+    link: { kind: 'report', id: 'purchasing', label: 'Open purchasing reports' },
+  }
+}
+
+const peopleReport = (s: AppState, at: string): Report => {
+  const today = ymd(at)
+  const now = toMs(at)
+  const staff = currentEmployees(s)
+  const count = (st: AttendanceState) => staff.filter((e) => attendanceState(s, e.id, today, now) === st).length
+  return {
+    title: 'People report, today',
+    lines: [
+      `Headcount: ${staff.length} across ${plural(s.departments.length, 'department')}`,
+      `Today: ${count('present')} on time, ${count('late')} late, ${count('leave')} on leave, ${count('absent')} absent`,
+      `Open requests: ${s.hrRequests.filter((r) => r.status === 'pending').length} leave, overtime or loan`,
+    ],
+    link: { kind: 'report', id: 'people', label: 'Open people reports' },
+  }
+}
+
+const listingsReport = (s: AppState): Report => {
+  const by = (st: string) => s.listings.filter((l) => l.status === st).length
+  return {
+    title: 'Listing report',
+    lines: [`Live: ${by('active')}, reserved: ${by('reserved')}, in review: ${by('review')}`, `Sold: ${by('sold')}, delisted: ${by('delisted')}`, `Value of live listings: ${sumIdr(s.listings.filter((l) => l.status === 'active').reduce((n, l) => n + l.price, 0))}`],
+    link: { kind: 'report', id: 'listings', label: 'Open listings' },
+  }
+}
+
+const leadsReport = (s: AppState, t: string, at: string): Report => {
+  const p = periodOf(t, at)
+  const fresh = s.inquiries.filter((i) => within(i.createdAt, p))
+  const stages = ['new', 'contacted', 'survey', 'negotiation', 'won', 'lost'].map((st) => `${st} ${s.inquiries.filter((i) => i.status === st).length}`)
+  return {
+    title: `Lead report, ${p.label}`,
+    lines: [`New inquiries: ${fresh.length}`, `All inquiries by stage: ${stages.join(', ')}`],
+    link: { kind: 'report', id: 'leads', label: 'Open inquiries' },
+  }
+}
+
+type ReportKind = 'sales' | 'finance' | 'inventory' | 'purchasing' | 'people' | 'listings' | 'leads'
+
+const REPORTS: { kind: ReportKind; words: RegExp; needs: Permission; what: string; build: (s: AppState, t: string, at: string) => Report }[] = [
+  { kind: 'sales', words: /\b(sales|penjualan|deals?|closing|omzet)\b/, needs: 'deal.view', what: 'sales', build: salesReport },
+  { kind: 'finance', words: /\b(finance|keuangan|laba|rugi|profit|income|revenue|pendapatan|expenses?|biaya)\b/, needs: 'finance.view', what: 'finance figures', build: financeReport },
+  { kind: 'inventory', words: /\b(stock|stok|inventory|persediaan|gudang)\b/, needs: 'purchase.view', what: 'stock', build: (s) => inventoryReport(s) },
+  { kind: 'purchasing', words: /\b(purchas\w*|pembelian|po|orders?|pengadaan|spend)\b/, needs: 'purchase.view', what: 'purchasing', build: purchasingReport },
+  { kind: 'people', words: /\b(people|sdm|hr|karyawan|employees?|pegawai|absensi|kehadiran)\b/, needs: 'hr.view', what: 'people data', build: (s, _t, at) => peopleReport(s, at) },
+  { kind: 'listings', words: /\b(listings?|properti|property|properties|aset)\b/, needs: 'listing.view', what: 'listings', build: (s) => listingsReport(s) },
+  { kind: 'leads', words: /\b(leads?|inquir\w*|prospek|pertanyaan|calon pembeli)\b/, needs: 'inquiry.view', what: 'inquiries', build: leadsReport },
+]
+
+const REPORT_WORD = /\b(report|reports|laporan|ringkasan|summary|rekap|recap|overview|dashboard)\b/
+
+const toReply = (r: Report): ConsoleReply => ({ text: [r.title + ':', ...r.lines.map((l) => `• ${l}`)].join('\n'), links: [r.link] })
+
+/** One report by topic, or the dashboard summary: one figure line per module the role can see. */
+const readReport = (s: AppState, convo: ConsoleConvo, t: string, at: string): ConsoleTurn => {
+  const asked = REPORTS.filter((r) => r.words.test(t))
+  if (asked.length) {
+    const allowed = asked.filter((r) => can(convo.ctx, r.needs))
+    if (!allowed.length) return refuse(convo, asked[0].needs, asked[0].what, 'Read report')
+    return say(convo, 'Read report', ['read_reports'], ...allowed.map((r) => toReply(r.build(s, t, at))))
+  }
+  const lines = REPORTS.filter((r) => can(convo.ctx, r.needs) && r.kind !== 'purchasing').map((r) => {
+    const rep = r.build(s, t, at)
+    return `${rep.title.split(',')[0]}: ${rep.lines[0]}`
+  })
+  const waiting = requestsAwaiting(s, convo.ctx.userId, can(convo.ctx, 'request.approve')).length + prsAwaiting(s, convo.ctx.userId, can(convo.ctx, 'purchase.approve')).length
+  return say(convo, 'Read report', ['read_reports'], {
+    text: ['Dashboard summary:', ...lines.map((l) => `• ${l}`), `• Waiting for your approval: ${waiting}`, 'Ask for any of these as a full report, for example "laporan penjualan bulan lalu".'].join('\n'),
+    links: [{ kind: 'report', id: 'dashboard', label: 'Open the dashboard' }],
+    quick: ['Laporan penjualan bulan ini', 'Laporan keuangan bulan ini', 'Laporan stok'],
+  })
+}
+
 const consoleStep = (s: AppState, convo: ConsoleConvo, raw: string, at: string): ConsoleTurn => {
   const text = raw.trim()
   const t = text.toLowerCase()
@@ -577,6 +730,7 @@ const consoleStep = (s: AppState, convo: ConsoleConvo, raw: string, at: string):
   if (guard) return say(c, GUARD_PURPOSE, [], { text: guardReply(guard, 'console', text), quick: starters(c.ctx) })
   if (CONFIRM.test(t) || CANCEL.test(t)) return say(c, 'Chat turn', [], { text: 'There is no change waiting. Ask me something, or type "help".' })
   if (has(t, /^(help|bantuan|menu|what can you do|apa yang bisa)/)) return help(c)
+  if (REPORT_WORD.test(t)) return readReport(s, c, t, at)
 
   if (has(t, /\b(check me in|clock me in|absen(?:kan)? saya|absen masuk)\b|^(please )?(check|clock) in\b/)) return propose(s, c, { kind: 'checkIn' }, at)
   if (has(t, /^(approve|reject|setujui|tolak|acc)\b/)) return parseDecision(s, c, text, t, at)

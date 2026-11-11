@@ -8,7 +8,18 @@ import { JessyChat, useJessyChat } from '../../components/JessyChat'
 import { paths } from '../../components/links'
 import { useAppState } from '../../state/store'
 
+const REPORT_PATH: Record<string, string> = {
+  dashboard: paths.console,
+  sales: paths.reports,
+  finance: paths.financeReports,
+  purchasing: paths.purchasingReports,
+  people: paths.hrReports,
+  listings: paths.listings,
+  leads: paths.inquiries,
+}
+
 const LINK_PATH: Record<RecordLinkKind, (id: string) => string> = {
+  report: (id) => REPORT_PATH[id] ?? paths.console,
   attendance: () => paths.attendance,
   item: (id) => paths.item(id),
   stock: () => paths.stock,
@@ -67,7 +78,7 @@ export function ConsoleJessyChat({ chat, onFollow, className }: { chat: ReturnTy
       messages={chat.messages}
       typing={chat.typing}
       onSend={chat.send}
-      placeholder="Ask about attendance, stock, sales…"
+      placeholder="Ask for a report, e.g. laporan penjualan bulan ini"
       renderListingLink={() => null}
       renderAfter={(m) => {
         const links = (m as ConsoleReply).links

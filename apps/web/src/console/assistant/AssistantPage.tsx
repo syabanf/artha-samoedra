@@ -10,7 +10,7 @@ export function AssistantPage() {
     <div className="flex flex-col gap-4">
       <PageHeader
         title={`Ask ${state.settings.agentName}`}
-        description="Ask about attendance, stock, sales, candidates, approvals and invoices. Any change waits for your Confirm and runs in your name."
+        description="Ask for a report or about any figure on your dashboard: sales, finance, stock, purchasing, people, listings and leads. Any change waits for your Confirm and runs in your name."
         className="mb-0"
       />
       <Card className="overflow-hidden p-0">

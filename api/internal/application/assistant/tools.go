@@ -79,6 +79,11 @@ func (s *Service) tools(actor iam.Actor) []tool {
 			object(nil, map[string]*Schema{"date": str("Day as YYYY-MM-DD. Leave empty for today.")})}, s.attendanceTool},
 		{Tool{"low_stock", "Active inventory items below their minimum stock, summed over every warehouse, worst first.", object(nil, nil)}, s.lowStockTool},
 		{Tool{"overdue_invoices", "Issued invoices past their due date with a balance left, oldest first.", object(nil, nil)}, s.overdueTool},
+		{Tool{"dashboard_report", "Figures for a report: one topic, or overview for the whole dashboard. Use it first for any report, summary or recap request.",
+			object([]string{"topic"}, map[string]*Schema{
+				"topic":  str("Report topic.", reportTopics...),
+				"period": str("Period for sales, finance and leads. Defaults to this month.", reportPeriods...),
+			})}, s.reportTool},
 	}
 	var names, usage []string
 	for _, d := range s.commands.Catalog() {

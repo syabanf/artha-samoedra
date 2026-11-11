@@ -4,14 +4,16 @@
  * dispatch with meta.by = JESSY. An LLM-backed engine can replace these functions behind the same Turn shape.
  */
 import type { AiAgentId, AssetType, BuyerFinancing, BuyerPurpose, BuyerTimeline, DealType, InquiryQualification, Listing } from '@artha/types'
-import { ASSET_TYPE_LABEL, ASSET_TYPES, DEAL_TYPE_LABEL } from '@artha/types'
+import { ASSET_TYPE_LABEL, ASSET_TYPES } from '@artha/types'
 import { addDays } from './clock'
 import { normalizePhone, publicListings } from './derive'
-import { fmtArea, fmtIdrShort, newId } from './format'
+import { fmtIdrShort, newId } from './format'
 import { aiCall, rememberFacts, TOOL_FOR_ACTION } from './gateway'
 import type { AppAction, AppState } from './store'
 import { buildInquiry, buildListing, buildPartner, delistBlocker, JESSY, reduce } from './store'
 import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
+import type { BuyerQuery, Lang, Topic } from './buyer-copy'
+import { COPY, describeCriteria, detectLang, INTENT, money, quick, readOrdinal, searchHint, titleCase, TOPIC } from './buyer-copy'
 
 export interface Reply {
   text: string
@@ -118,26 +120,40 @@ const TYPE_WORDS: Record<AssetType, RegExp> = {
 const placeOf = (l: Listing) =>
   `${l.city} ${l.district} ${['Badung', 'Gianyar'].includes(l.city) ? 'bali' : ''}`.toLowerCase()
 
-interface BuyerQuery {
-  type: AssetType | null
-  deal: DealType | null
-  maxPrice: number | null
-  minBedrooms: number | null
-  places: string[]
+/** City and district names in the message; single words such as "jakarta" or "bali" when no full name matches. */
+const readPlaces = (s: AppState, t: string) => {
+  const words = ` ${t.replace(/[^a-z]+/g, ' ')} `
+  const names = [...new Set(publicListings(s).flatMap((l) => [l.city.toLowerCase(), l.district.toLowerCase()]))]
+  const whole = names.filter((n) => words.includes(` ${n} `))
+  if (whole.length) return whole.filter((n) => !whole.some((o) => o !== n && o.includes(n)))
+  const known = publicListings(s).map(placeOf).join(' ')
+  return words.trim().split(' ').filter((w) => w.length >= 4 && known.includes(w))
 }
 
-const parseBuyerQuery = (s: AppState, text: string): BuyerQuery => {
-  const t = text.toLowerCase()
-  const beds = t.match(/(\d)\s*(bedrooms?|beds?|br|kamar|kt)/)
-  const places = publicListings(s).map(placeOf).join(' ')
+const UNDER = /\b(under|below|less than|max\w*|maks\w*|di ?bawah|kurang dari)\b/
+
+const parseBuyerQuery = (s: AppState, t: string): BuyerQuery => {
+  const beds = t.match(/(\d)\s*(bedrooms?|beds?|br|kamar|kt)\b/)
+  const maxPrice = parseBudget(t)
   return {
     type: ASSET_TYPES.find((k) => TYPE_WORDS[k].test(t)) ?? null,
     deal: /\b(rent|rental|lease|sewa|kontrak|disewakan)\b/.test(t) ? 'sewa' : /\b(buy|sale|purchase|beli|dijual|jual)\b/.test(t) ? 'jual' : null,
-    maxPrice: parseBudget(t),
+    maxPrice,
+    under: !!maxPrice && UNDER.test(t),
     minBedrooms: beds ? Number(beds[1]) : null,
-    places: t.split(/[^a-z]+/).filter((w) => w.length >= 4 && places.includes(w)),
+    places: readPlaces(s, t),
   }
 }
+
+/** The new criteria over the last search: what the customer names replaces, the rest stays. */
+const refineQuery = (prev: BuyerQuery, next: BuyerQuery): BuyerQuery => ({
+  type: next.type ?? prev.type,
+  deal: next.deal ?? prev.deal,
+  maxPrice: next.maxPrice ?? prev.maxPrice,
+  under: next.maxPrice ? next.under : prev.under,
+  minBedrooms: next.minBedrooms ?? prev.minBedrooms,
+  places: next.places.length ? next.places : prev.places,
+})
 
 const searchListings = (s: AppState, q: BuyerQuery) =>
   publicListings(s)
@@ -145,7 +161,7 @@ const searchListings = (s: AppState, q: BuyerQuery) =>
       (l) =>
         (!q.type || l.type === q.type) &&
         (!q.deal || l.deal === q.deal) &&
-        (!q.maxPrice || l.price <= q.maxPrice * 1.1) &&
+        (!q.maxPrice || (q.under ? l.price < q.maxPrice : l.price <= q.maxPrice * 1.1)) &&
         (!q.minBedrooms || (l.bedrooms ?? 0) >= q.minBedrooms) &&
         (!q.places.length || q.places.some((p) => placeOf(l).includes(p))),
     )
@@ -175,6 +191,12 @@ export interface BuyerConvo {
   timeline?: BuyerTimeline | null
   financing?: BuyerFinancing | null
   purpose?: BuyerPurpose | null
+  /** The customer's language, from the last message that read clearly as one. */
+  lang?: Lang
+  /** Listing ids from the last results, so "yang kedua" picks the second. */
+  shown?: string[]
+  /** The criteria behind those results, so a refinement narrows them instead of starting over. */
+  query?: BuyerQuery | null
 }
 
 /**
@@ -193,17 +215,10 @@ export function leadTemperature(q: Omit<InquiryQualification, 'temperature'>, bu
 
 const SKIP = /^(skip|later|lewati|nanti saja|-)\b/
 
-const QUALIFY: Record<QualifyStage, Reply> = {
-  budget: { text: 'What budget do you have in mind? For example: Rp 2.5 B.', quick: ['Under Rp 1 B', 'Rp 1 to 3 B', 'Rp 3 to 10 B', 'Above Rp 10 B', 'Skip'] },
-  timeline: { text: 'When are you planning to buy or move in?', quick: ['Now', 'Within 3 months', '6 months or later', 'Skip'] },
-  financing: { text: 'How will you pay?', quick: ['Cash', 'Mortgage', 'Installment', 'Skip'] },
-  purpose: { text: 'What is the property for?', quick: ['To live in', 'To invest', 'For business', 'Skip'] },
-}
-
 const readTimeline = (t: string): BuyerTimeline | null =>
-  /\b(now|asap|immediately|this month|sekarang|segera)\b/.test(t) ? 'now'
+  /\b(now|asap|immediately|this month|sekarang|segera|secepatnya|bulan ini)\b/.test(t) ? 'now'
   : /\b(6|six|enam|later|next year|tahun depan)\b/.test(t) ? 'six_months'
-  : /\b(3|three|tiga|soon|few months)\b/.test(t) ? 'three_months'
+  : /\b(3|three|tiga|soon|few months|bulan depan)\b/.test(t) ? 'three_months'
   : null
 
 const readFinancing = (t: string): BuyerFinancing | null =>
@@ -213,8 +228,8 @@ const readFinancing = (t: string): BuyerFinancing | null =>
   : null
 
 const readPurpose = (t: string): BuyerPurpose | null =>
-  /\b(live|living|home|family|stay|tinggal|keluarga|huni)\b/.test(t) ? 'live_in'
-  : /\b(invest\w*|rental income|passive)\b/.test(t) ? 'invest'
+  /\b(live|living|home|family|stay|tinggal|ditinggali|keluarga|huni\w*)\b/.test(t) ? 'live_in'
+  : /\b(invest\w*|rental income|passive|disewakan)\b/.test(t) ? 'invest'
   : /\b(business|office|cafe|shop|store|usaha|bisnis|kantor|toko)\b/.test(t) ? 'business'
   : null
 
@@ -226,45 +241,55 @@ const nextQualify = (c: BuyerConvo, after: QualifyStage | null): BuyerConvo['sta
   return QUALIFY_ORDER.slice(from).find((st) => !(st === 'budget' ? c.budget : c[st])) ?? 'name'
 }
 
-const askNext = (c: BuyerConvo, after: QualifyStage | null, prefix?: string): Turn<BuyerConvo> => {
-  const stage = nextQualify(c, after)
-  const q = stage === 'name' ? { text: 'Thanks. May I have your name?' } : QUALIFY[stage as QualifyStage]
-  return { convo: { ...c, stage }, actions: [], replies: [prefix ? { ...q, text: `${prefix} ${q.text}` } : q], log: { purpose: 'Qualify buyer' } }
+type BuyerTurn = Turn<BuyerConvo>
+
+const answer = (convo: BuyerConvo, reply: Reply, purpose: string, tools?: string[]): BuyerTurn => ({ convo, actions: [], replies: [reply], log: { purpose, tools } })
+
+const langOf = (c: BuyerConvo): Lang => c.lang ?? 'en'
+
+const qualifyReply = (lang: Lang, stage: QualifyStage, text?: string): Reply => {
+  const q = COPY.qualify[lang][stage]
+  return { text: text ?? q.text, quick: q.quick }
 }
 
-export const buyerStart = (s: AppState, focusId: string | null = null): Turn<BuyerConvo> => {
+const askNext = (c: BuyerConvo, after: QualifyStage | null, prefix?: string): BuyerTurn => {
+  const stage = nextQualify(c, after)
+  const lang = langOf(c)
+  const q = stage === 'name' ? { text: COPY.askName[lang] } : qualifyReply(lang, stage as QualifyStage)
+  return answer({ ...c, stage }, prefix ? { ...q, text: `${prefix} ${q.text}` } : q, 'Qualify buyer')
+}
+
+/** Two search suggestions built from real listings, such as "House in Jakarta Selatan". */
+const searchHints = (s: AppState, lang: Lang) => [...new Set(publicListings(s).map((l) => searchHint(l, lang)))].slice(0, 2)
+
+/** Quick replies that fit where the conversation is: refine results, ask about the listing in focus, or start a search. */
+const contextQuick = (s: AppState, c: BuyerConvo, focus?: Listing) => {
+  const lang = langOf(c)
+  if (c.shown?.length) return quick(lang, 'cheaper', focus ? 'visit' : 'compareTop', 'howToBuy')
+  if (focus) return quick(lang, 'details', 'visit', focus.deal === 'jual' ? 'kpr' : 'similar')
+  return [...searchHints(s, lang), ...quick(lang, 'howToBuy')]
+}
+
+export const buyerStart = (s: AppState, focusId: string | null = null): BuyerTurn => {
   const focus = focusId ? s.listings.find((l) => l.id === focusId) : undefined
-  const name = s.settings.agentName
+  const agent = s.settings.agentName
+  const company = s.company.name
   return {
-    convo: { stage: 'idle', focus: focus?.id ?? null, budget: null, name: '', note: '', place: null, timeline: null, financing: null, purpose: null },
+    convo: { stage: 'idle', focus: focus?.id ?? null, budget: null, name: '', note: '', place: null, timeline: null, financing: null, purpose: null, lang: 'en', shown: [], query: null },
     actions: [],
     replies: [
-      {
-        text: focus
-          ? `Hi, I'm ${name} from Artha Samoedra. Questions about ${focus.code}, ${focus.title}? I can walk you through the details or book a site visit.`
-          : `Hi, I'm ${name} from Artha Samoedra. Tell me what you're looking for: type, location and budget. For example: "house in Bogor under Rp 2 B".`,
-        quick: focus
-          ? ['Details of this property', 'Book a site visit', 'Find similar']
-          : ['House in Jakarta', 'Warehouse for rent', 'Villa in Bali', 'Land under Rp 5 B'],
-      },
+      focus
+        ? { text: COPY.startFocus.en(agent, company, focus), quick: quick('en', 'details', 'visit', 'similar') }
+        : { text: COPY.start.en(agent, company), quick: [...searchHints(s, 'en'), ...quick('en', 'howToBuy')] },
     ],
   }
 }
 
-const detailReply = (l: Listing): Reply => ({
-  text: [
-    `${l.code}: ${l.title}.`,
-    `${DEAL_TYPE_LABEL[l.deal]} at ${fmtIdrShort(l.price)}${l.deal === 'sewa' ? ' a year' : ''}, ${l.district}, ${l.city}.`,
-    `Land ${fmtArea(l.landArea)}${l.buildingArea ? `, building ${fmtArea(l.buildingArea)}` : ''}${l.bedrooms ? `, ${l.bedrooms} bedrooms` : ''}, ${l.certificate} certificate.`,
-    l.highlights.length ? `Highlights: ${l.highlights.join(', ')}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' '),
+const detailReply = (l: Listing, lang: Lang): Reply => ({
+  text: COPY.detail[lang](l).filter(Boolean).join(' '),
   listingIds: [l.id],
-  quick: ['Book a site visit', 'Find similar'],
+  quick: quick(lang, 'visit', l.deal === 'jual' ? 'kpr' : 'nego', 'similar'),
 })
-
-const titleCase = (w: string) => w.charAt(0).toUpperCase() + w.slice(1)
 
 /** What Jessy remembers about a buyer once the phone number is known. */
 const buyerFacts = (s: AppState, c: BuyerConvo) => {
@@ -280,25 +305,31 @@ const buyerFacts = (s: AppState, c: BuyerConvo) => {
   ].filter((f): f is string => !!f)
 }
 
-export const buyerTurn = (s: AppState, convo: BuyerConvo, raw: string, at: string): Turn<BuyerConvo> => {
+export const buyerTurn = (s: AppState, previous: BuyerConvo, raw: string, at: string): BuyerTurn => {
   const text = raw.trim()
   const t = text.toLowerCase()
-  const focus = convo.focus ? s.listings.find((l) => l.id === convo.focus) : undefined
+  const lang = detectLang(text, langOf(previous))
+  const convo = { ...previous, lang }
 
-  if (convo.stage !== 'idle' && CANCEL.test(t)) {
-    return { convo: { ...convo, stage: 'idle' }, actions: [], replies: [{ text: 'Cancelled. Anything else I can help with?' }] }
-  }
+  if (convo.stage !== 'idle' && CANCEL.test(t)) return answer({ ...convo, stage: 'idle' }, { text: COPY.cancelled[lang] }, 'Chat turn')
   // Name and phone answers are free text, so the guard skips them.
   const guard = convo.stage === 'name' || convo.stage === 'phone' ? null : guardMessage(text, 'public')
   if (guard) {
-    return { convo, actions: [], replies: [{ text: guardReply(guard, 'public', text), quick: ['House in Jakarta', 'Book a site visit', 'Contact me'] }], log: { purpose: GUARD_PURPOSE } }
+    return answer(convo, { text: guardReply(guard, 'public', text, lang), quick: [...searchHints(s, lang).slice(0, 1), ...quick(lang, 'visit', 'contact')] }, GUARD_PURPOSE)
   }
+  return convo.stage === 'idle' ? idleTurn(s, convo, text) : leadTurn(s, convo, text, at)
+}
 
+/** Qualification, name and phone: the lead capture that ends in `inquiries/create` and a handoff to the assigned agent. */
+const leadTurn = (s: AppState, convo: BuyerConvo, text: string, at: string): BuyerTurn => {
+  const t = text.toLowerCase()
+  const lang = langOf(convo)
+  const focus = convo.focus ? s.listings.find((l) => l.id === convo.focus) : undefined
   switch (convo.stage) {
     case 'budget': {
       if (SKIP.test(t)) return askNext(convo, 'budget')
       const budget = parseBudget(t)
-      return budget ? askNext({ ...convo, budget }, 'budget') : { convo, actions: [], replies: [{ ...QUALIFY.budget, text: 'I could not read that amount. For example: Rp 2.5 B or Rp 850 M.' }], log: { purpose: 'Qualify buyer' } }
+      return budget ? askNext({ ...convo, budget }, 'budget') : answer(convo, qualifyReply(lang, 'budget', COPY.badBudget[lang]), 'Qualify buyer')
     }
     case 'timeline':
     case 'financing':
@@ -306,121 +337,169 @@ export const buyerTurn = (s: AppState, convo: BuyerConvo, raw: string, at: strin
       const stage = convo.stage
       if (SKIP.test(t)) return askNext(convo, stage)
       const value = stage === 'timeline' ? readTimeline(t) : stage === 'financing' ? readFinancing(t) : readPurpose(t)
-      if (!value) return { convo, actions: [], replies: [{ ...QUALIFY[stage], text: `Pick one of the options, or tap Skip. ${QUALIFY[stage].text}` }], log: { purpose: 'Qualify buyer' } }
+      if (!value) return answer(convo, qualifyReply(lang, stage, `${COPY.pickOne[lang]} ${COPY.qualify[lang][stage].text}`), 'Qualify buyer')
       return askNext({ ...convo, [stage]: value }, stage)
     }
     case 'name':
-      if (text.length < 2) return { convo, actions: [], replies: [{ text: 'May I have your name?' }], log: { purpose: 'Capture lead' } }
-      return {
-        convo: { ...convo, stage: 'phone', name: text },
-        actions: [],
-        replies: [{ text: `Thanks, ${text}. Which WhatsApp number can our team reach you on?` }],
-        log: { purpose: 'Capture lead' },
-      }
-    case 'phone': {
-      const phone = normalizePhone(text)
-      if (phone.length < 9) {
-        return { convo, actions: [], replies: [{ text: 'That number looks incomplete. Please try again, for example 0812 3456 7890.' }], log: { purpose: 'Capture lead' } }
-      }
-      const answers = { timeline: convo.timeline ?? null, financing: convo.financing ?? null, purpose: convo.purpose ?? null }
-      const qualification: InquiryQualification = { ...answers, temperature: leadTemperature(answers, convo.budget, focus) }
-      const inquiry = buildInquiry(
-        s,
-        { listingId: convo.focus, name: convo.name, phone, channel: 'web_chat', message: convo.note, budget: convo.budget, qualification },
-        at,
-      )
-      const done = { ...convo, stage: 'idle' as const }
-      return {
-        convo: done,
-        actions: [{ type: 'inquiries/create', inquiry }],
-        replies: [{ text: `Thanks, ${convo.name}. I logged your request as ${inquiry.code}.` }],
-        log: { purpose: 'Capture lead', subject: phone, facts: buyerFacts(s, done) },
-        // The round-robin automation assigns the lead during dispatch, so the handoff reads the next state.
-        followUp: (next) => {
-          const ownerId = next.inquiries.find((i) => i.id === inquiry.id)?.ownerId
-          const owner = next.users.find((u) => u.id === ownerId)
-          const about = focus ? ` about ${focus.code}` : ''
-          return [
-            {
-              text: owner
-                ? `${owner.name} from our sales team will message you on WhatsApp today${about}.`
-                : `Our team will message you on WhatsApp today${about}.`,
-              quick: ['Search other properties'],
-            },
-          ]
-        },
-      }
-    }
+      if (text.length < 2) return answer(convo, { text: COPY.askNameAgain[lang] }, 'Capture lead')
+      return answer({ ...convo, stage: 'phone', name: text }, { text: COPY.askPhone[lang](text) }, 'Capture lead')
   }
-
-  const code = t.match(/as-?\s?(\d{1,4})/)
-  if (code) {
-    const wanted = `AS-${code[1].padStart(4, '0')}`
-    const l = publicListings(s).find((x) => x.code === wanted)
-    if (!l) return { convo, actions: [], replies: [{ text: `${wanted} is not available or no longer on the market.` }], log: { purpose: 'Answer listing question', tools: ['search_listings'] } }
-    return { convo: { ...convo, focus: l.id }, actions: [], replies: [detailReply(l)], log: { purpose: 'Answer listing question', tools: ['search_listings'] } }
-  }
-
-  if (has(t, /details of this property|detail aset ini/) && focus) return { convo, actions: [], replies: [detailReply(focus)], log: { purpose: 'Answer listing question' } }
-
-  if (has(t, /visit|viewing|book|schedule|contact|call me|interested|negotiat|offer|mortgage|survei|survey|jadwal|hubungi|kontak|tertarik|minat|nego|tawar|kpr|telepon|whatsapp|\bwa\b/)) {
-    const next = { ...convo, note: text, budget: parseBudget(text) ?? convo.budget, financing: readFinancing(t) ?? convo.financing ?? null }
-    return askNext(next, null, focus ? `Sure, I'll set that up for ${focus.code}. A few quick questions first so the right agent calls you.` : 'Sure, our team will help. A few quick questions first so the right agent calls you.')
-  }
-
-  let q = parseBuyerQuery(s, text)
-  if (has(t, /similar|mirip|serupa/) && focus) {
-    q = { type: focus.type, deal: focus.deal, maxPrice: null, minBedrooms: null, places: [] }
-  }
-  if (!isEmptyQuery(q)) {
-    const hits = searchListings(s, q).filter((l) => l.id !== (has(t, /similar|mirip|serupa/) ? focus?.id : null))
-    const place = q.places[0] ?? convo.place ?? null
-    const log = { purpose: 'Search listings', tools: ['search_listings'] }
-    if (!hits.length) {
-      return {
-        convo: { ...convo, place, budget: q.maxPrice ?? convo.budget, note: text },
-        actions: [],
-        replies: [
-          {
-            text: 'Nothing on our list matches yet. Leave your contact and I will ask the team to search our partner network.',
-            quick: ['Contact me', 'Show all properties'],
-          },
-        ],
-        log,
-      }
-    }
-    const top = hits.slice(0, 3)
-    return {
-      convo: { ...convo, place, focus: top[0].id, budget: q.maxPrice ?? convo.budget, note: text },
-      actions: [],
-      replies: [
-        {
-          text:
-            hits.length === 1
-              ? 'I found 1 matching property:'
-              : `I found ${hits.length} matching properties.${hits.length > top.length ? ` Here are the top ${top.length}:` : ''}`,
-          listingIds: top.map((l) => l.id),
-          quick: ['Book a site visit', 'Find similar'],
-        },
-      ],
-      log,
-    }
-  }
-
-  if (has(t, /all properties|other properties|semua aset|cari aset lain/)) {
-    return { convo, actions: [], replies: [{ text: 'Tell me a type, location or budget, for example "shophouse in Bandung" or "warehouse for rent".' }] }
-  }
-
+  const phone = normalizePhone(text)
+  if (phone.length < 9) return answer(convo, { text: COPY.badPhone[lang] }, 'Capture lead')
+  const answers = { timeline: convo.timeline ?? null, financing: convo.financing ?? null, purpose: convo.purpose ?? null }
+  const qualification: InquiryQualification = { ...answers, temperature: leadTemperature(answers, convo.budget, focus) }
+  const inquiry = buildInquiry(
+    s,
+    { listingId: convo.focus, name: convo.name, phone, channel: 'web_chat', message: convo.note, budget: convo.budget, qualification },
+    at,
+  )
+  const done = { ...convo, stage: 'idle' as const }
   return {
-    convo,
-    actions: [],
-    replies: [
-      {
-        text: `I'm ${s.settings.agentName}. I can find properties, explain a listing by its code (for example AS-0001), or book a site visit.`,
-        quick: ['House in Jakarta', 'Warehouse for rent', 'Contact me'],
-      },
-    ],
+    convo: done,
+    actions: [{ type: 'inquiries/create', inquiry }],
+    replies: [{ text: COPY.logged[lang](convo.name, inquiry.code) }],
+    log: { purpose: 'Capture lead', subject: phone, facts: buyerFacts(s, done) },
+    // The round-robin automation assigns the lead during dispatch, so the handoff reads the next state.
+    followUp: (next) => {
+      const ownerId = next.inquiries.find((i) => i.id === inquiry.id)?.ownerId
+      const owner = next.users.find((u) => u.id === ownerId)
+      return [{ text: COPY.handoff[lang](owner?.name ?? null, focus?.code ?? null), quick: quick(lang, 'other') }]
+    },
   }
+}
+
+/** Hello, thanks, ok, bye and "who are you". A greeting in front of a question lets the question through. */
+const smallTalk = (s: AppState, c: BuyerConvo, t: string, focus?: Listing): BuyerTurn | { rest: string } => {
+  const lang = langOf(c)
+  const agent = s.settings.agentName
+  if (INTENT.ok.test(t.replace(/[^a-z ]+/g, '').trim())) return answer(c, { text: COPY.ok[lang] }, 'Small talk')
+  if (INTENT.who.test(t)) return answer(c, { text: COPY.who[lang](agent, s.company.name), quick: contextQuick(s, c, focus) }, 'Small talk')
+  const polite = t.match(INTENT.greeting) ?? t.match(INTENT.thanks) ?? t.match(INTENT.bye)
+  if (!polite) return { rest: t }
+  const rest = t.slice(polite[0].length).replace(/^[\s,.!?]+/, '')
+  if (rest.replace(INTENT.filler, '').replace(/[^a-z0-9]+/g, '')) return INTENT.bye.test(rest) ? answer(c, { text: COPY.bye[lang] }, 'Small talk') : { rest }
+  if (INTENT.bye.test(polite[0])) return answer(c, { text: COPY.bye[lang] }, 'Small talk')
+  if (INTENT.thanks.test(polite[0])) return answer(c, { text: COPY.thanks[lang] }, 'Small talk')
+  return answer(c, { text: COPY.greet[lang](t, focus), quick: contextQuick(s, c, focus) }, 'Small talk')
+}
+
+const byCode = (s: AppState, code: string) => publicListings(s).find((l) => l.code === code)
+
+/** Runs a search and remembers its criteria and results; a refinement with no hits keeps the earlier results. */
+const runSearch = (s: AppState, c: BuyerConvo, q: BuyerQuery, text: string, opts: { refining?: boolean; exclude?: string; none?: string } = {}): BuyerTurn => {
+  const lang = langOf(c)
+  const hits = searchListings(s, q).filter((l) => l.id !== opts.exclude)
+  const criteria = describeCriteria(q, lang)
+  const base = { ...c, place: q.places[0] ?? c.place ?? null, budget: parseBudget(text.toLowerCase()) ?? c.budget, note: text }
+  const tools = ['search_listings']
+  if (!hits.length) {
+    const next = opts.refining ? base : { ...base, query: q, shown: [] }
+    const focus = s.listings.find((l) => l.id === next.focus)
+    const reply = { text: opts.none ?? COPY.noResults[lang](criteria), quick: opts.refining ? contextQuick(s, next, focus) : quick(lang, 'contact', 'all') }
+    return answer(next, reply, 'Search listings', tools)
+  }
+  const top = hits.slice(0, 3)
+  return answer(
+    { ...base, focus: top[0].id, query: q, shown: top.map((l) => l.id) },
+    {
+      text: COPY.results[lang](criteria, hits.length, top.length),
+      listingIds: top.map((l) => l.id),
+      quick: top.length > 1 ? quick(lang, 'compareTop', 'cheaper', 'visit') : quick(lang, 'visit', 'similar', 'howToBuy'),
+    },
+    'Search listings',
+    tools,
+  )
+}
+
+const compareTurn = (s: AppState, c: BuyerConvo, codes: string[]): BuyerTurn => {
+  const lang = langOf(c)
+  const tools = ['search_listings']
+  const missing = codes.find((code) => !byCode(s, code))
+  if (missing) return answer(c, { text: COPY.notListed[lang](missing) }, 'Answer listing question', tools)
+  const ls = codes.length >= 2 ? codes.map((code) => byCode(s, code)!) : (c.shown ?? []).slice(0, 2).flatMap((id) => publicListings(s).find((l) => l.id === id) ?? [])
+  if (ls.length < 2) {
+    const [a, b] = publicListings(s)
+    return answer(c, { text: COPY.compareNeedsTwo[lang](a.code, b.code) }, 'Answer listing question')
+  }
+  return answer(
+    { ...c, shown: ls.map((l) => l.id) },
+    { text: COPY.compare[lang](ls), listingIds: ls.map((l) => l.id), quick: quick(lang, 'visit', 'connect') },
+    'Compare listings',
+    tools,
+  )
+}
+
+/** Answers from the listing's own fields, the buying FAQ, or the lead flow, in that order of what the message names. */
+const idleTurn = (s: AppState, convo: BuyerConvo, text: string): BuyerTurn => {
+  const lang = langOf(convo)
+  let focus = convo.focus ? s.listings.find((l) => l.id === convo.focus) : undefined
+  const talk = smallTalk(s, convo, text.toLowerCase(), focus)
+  if (!('rest' in talk)) return talk
+  const t = talk.rest
+  const shown = convo.shown ?? []
+
+  const codes = [...t.matchAll(/\bas-?\s?(\d{1,4})\b/g)].map((m) => `AS-${m[1].padStart(4, '0')}`)
+  if (codes.length >= 2 || INTENT.compare.test(t)) return compareTurn(s, convo, codes)
+
+  // A code, "yang kedua" or "that one" points at a listing; the rest of the message asks about it.
+  let referenced = false
+  if (codes.length) {
+    focus = byCode(s, codes[0])
+    if (!focus) return answer(convo, { text: COPY.notListed[lang](codes[0]) }, 'Answer listing question', ['search_listings'])
+    referenced = true
+  } else {
+    const nth = shown.length ? readOrdinal(t) : null
+    if (nth !== null) {
+      if (nth >= shown.length) return answer(convo, { text: COPY.outOfRange[lang](shown.length), listingIds: shown }, 'Answer listing question')
+      focus = s.listings.find((l) => l.id === shown[nth])
+      referenced = true
+    } else referenced = !!focus && INTENT.that.test(t)
+  }
+  const c = { ...convo, focus: focus?.id ?? convo.focus }
+  const cards = referenced && focus ? [focus.id] : undefined
+
+  if (INTENT.office.test(t)) {
+    const wa = s.integrations.find((i) => i.kind === 'whatsapp' && i.status === 'connected')?.account
+    return answer(c, { text: COPY.office[lang](s.company, wa), quick: quick(lang, 'visit', 'contact') }, 'Answer FAQ')
+  }
+  if (INTENT.visit.test(t)) {
+    const next = { ...c, note: text, budget: parseBudget(t) ?? c.budget, financing: readFinancing(t) ?? c.financing ?? null }
+    return askNext(next, null, COPY.visitIntro[lang](focus))
+  }
+  if (INTENT.nego.test(t)) return answer(c, { text: COPY.nego[lang](focus), listingIds: cards, quick: quick(lang, 'connect', 'visit') }, 'Answer listing question')
+  if (INTENT.kpr.test(t)) {
+    const rent = focus?.deal === 'sewa'
+    return answer(c, { text: COPY.kpr[lang](focus), listingIds: cards, quick: rent ? quick(lang, 'visit', 'similar') : quick(lang, 'connect', 'howToBuy') }, 'Answer FAQ')
+  }
+  if (INTENT.howToBuy.test(t)) return answer(c, { text: COPY.howToBuy[lang], quick: quick(lang, 'docs', 'kpr', 'visit') }, 'Answer FAQ')
+  if (INTENT.docs.test(t)) return answer(c, { text: COPY.docs[lang], quick: quick(lang, 'howToBuy', 'kpr', 'connect') }, 'Answer FAQ')
+  if (INTENT.certCheck.test(t)) return answer(c, { text: COPY.certCheck[lang], quick: contextQuick(s, c, focus) }, 'Answer FAQ')
+
+  const asked = parseBuyerQuery(s, t)
+  const topics = (Object.keys(TOPIC) as Topic[]).filter((k) => TOPIC[k].test(t))
+  const newSearch = asked.places.length || asked.maxPrice || asked.minBedrooms || (asked.type && asked.type !== focus?.type)
+  if (topics.length && !newSearch) {
+    if (!focus) return answer(c, { text: COPY.whichListing[lang](publicListings(s)[0].code), quick: contextQuick(s, c) }, 'Answer listing question')
+    const quickFor = focus.deal === 'jual' ? quick(lang, 'visit', 'kpr', 'nego') : quick(lang, 'visit', 'nego', 'similar')
+    return answer(c, { text: topics.map((k) => COPY.topic[lang][k](focus)).join(' '), listingIds: cards, quick: quickFor }, 'Answer listing question')
+  }
+  if (focus && (referenced || INTENT.details.test(t))) return answer(c, detailReply(focus, lang), 'Answer listing question', ['search_listings'])
+
+  if (INTENT.cheaper.test(t) && shown.length) {
+    const cheapest = Math.min(...shown.map((id) => s.listings.find((l) => l.id === id)?.price ?? Infinity))
+    const q = { ...refineQuery(convo.query ?? asked, asked), maxPrice: cheapest, under: true }
+    return runSearch(s, c, q, text, { refining: true, none: COPY.noCheaper[lang](money(cheapest, lang)) })
+  }
+  if (INTENT.similar.test(t) && focus) {
+    return runSearch(s, c, { type: focus.type, deal: focus.deal, maxPrice: null, under: false, minBedrooms: null, places: [] }, text, { exclude: focus.id })
+  }
+  if (!isEmptyQuery(asked)) {
+    const refining = !!convo.query && (INTENT.refine.test(t) || !asked.type)
+    return runSearch(s, c, refining ? refineQuery(convo.query!, asked) : asked, text, { refining })
+  }
+  if (INTENT.all.test(t)) return answer(c, { text: COPY.searchPrompt[lang], quick: [...searchHints(s, lang), ...quick(lang, 'howToBuy')] }, 'Chat turn')
+
+  return answer(c, { text: COPY.fallback[lang], quick: contextQuick(s, c, focus) }, 'Chat turn')
 }
 
 // ---------------------------------------------------------------- partner chat (listing and delisting)

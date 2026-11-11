@@ -100,7 +100,7 @@ function JessyPanel({ focusId, first, onClose }: { focusId: string | null; first
         messages={chat.messages}
         typing={chat.typing}
         onSend={chat.send}
-        placeholder="e.g. shop house in Bandung under Rp 6 B"
+        placeholder="Tanya apa saja, mis. ruko di Bandung di bawah 6 M"
         renderListingLink={(id, children) => {
           const l = state.listings.find((x) => x.id === id)
           return l ? (
