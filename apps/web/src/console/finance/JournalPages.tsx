@@ -260,7 +260,7 @@ export function JournalEditorPage() {
   if (id && !existing) {
     return (
       <Card>
-        <EmptyState title="Journal not found" description="This journal may have been removed." action={<BackButton fallback={paths.journals} />} />
+        <EmptyState pageTitle title="Journal not found" description="This journal may have been removed." action={<BackButton fallback={paths.journals} />} />
       </Card>
     )
   }
@@ -426,7 +426,7 @@ export function JournalDetailPage() {
   if (!j) {
     return (
       <Card>
-        <EmptyState title="Journal not found" description="This journal may have been removed." action={<BackButton fallback={paths.journals} />} />
+        <EmptyState pageTitle title="Journal not found" description="This journal may have been removed." action={<BackButton fallback={paths.journals} />} />
       </Card>
     )
   }

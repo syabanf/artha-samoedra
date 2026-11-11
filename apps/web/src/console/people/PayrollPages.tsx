@@ -268,7 +268,7 @@ export function PayrollRunPage() {
   if (!run) {
     return (
       <Card>
-        <EmptyState title="Payroll run not found" description="This run may have been removed." action={<BackButton fallback={paths.payroll} />} />
+        <EmptyState pageTitle title="Payroll run not found" description="This run may have been removed." action={<BackButton fallback={paths.payroll} />} />
       </Card>
     )
   }
@@ -453,7 +453,7 @@ export function PayslipPage() {
   if (!run || !slip || !e) {
     return (
       <Card>
-        <EmptyState title="Payslip not found" description="This person has no slip on that run." action={<BackButton fallback={back} />} />
+        <EmptyState pageTitle title="Payslip not found" description="This person has no slip on that run." action={<BackButton fallback={back} />} />
       </Card>
     )
   }

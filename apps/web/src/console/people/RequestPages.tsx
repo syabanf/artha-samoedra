@@ -500,7 +500,7 @@ export function HrRequestDetailPage() {
   if (!r) {
     return (
       <Card>
-        <EmptyState title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.hrRequests} />} />
+        <EmptyState pageTitle title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.hrRequests} />} />
       </Card>
     )
   }

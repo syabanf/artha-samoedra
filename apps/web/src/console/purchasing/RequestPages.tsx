@@ -325,8 +325,7 @@ export function PurchaseRequestEditorPage() {
   if (id && !old) {
     return (
       <Card>
-        <h1 className="sr-only">Request not found</h1>
-        <EmptyState title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.prs} />} />
+        <EmptyState pageTitle title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.prs} />} />
       </Card>
     )
   }
@@ -486,8 +485,7 @@ export function PurchaseRequestDetailPage() {
   if (!r) {
     return (
       <Card>
-        <h1 className="sr-only">Request not found</h1>
-        <EmptyState title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.prs} />} />
+        <EmptyState pageTitle title="Request not found" description="This request may have been removed." action={<BackButton fallback={paths.prs} />} />
       </Card>
     )
   }

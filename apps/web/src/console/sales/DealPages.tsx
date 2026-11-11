@@ -464,7 +464,7 @@ export function DealDetailPage() {
   if (!d) {
     return (
       <Card>
-        <EmptyState title="Deal not found" description="This deal may have been removed." action={<BackButton fallback={paths.deals} />} />
+        <EmptyState pageTitle title="Deal not found" description="This deal may have been removed." action={<BackButton fallback={paths.deals} />} />
       </Card>
     )
   }

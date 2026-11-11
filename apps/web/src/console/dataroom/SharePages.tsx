@@ -221,7 +221,7 @@ export function ShareLinkPage() {
   if (!l) {
     return (
       <Card>
-        <EmptyState title="Share link not found" description="The link may have been removed." action={<BackButton fallback={paths.shareLinks} />} />
+        <EmptyState pageTitle title="Share link not found" description="The link may have been removed." action={<BackButton fallback={paths.shareLinks} />} />
       </Card>
     )
   }

@@ -288,7 +288,7 @@ export function CommissionDetailPage() {
   if (!st) {
     return (
       <Card>
-        <EmptyState title="Statement not found" description="This statement may have been removed." action={<BackButton fallback={paths.commissions} />} />
+        <EmptyState pageTitle title="Statement not found" description="This statement may have been removed." action={<BackButton fallback={paths.commissions} />} />
       </Card>
     )
   }

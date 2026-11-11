@@ -36,7 +36,7 @@ export function ListingDetailPage() {
   if (!l) {
     return (
       <Card>
-        <EmptyState title="Listing not found" description="This listing may have been deleted." action={<BackButton fallback={paths.listings} />} />
+        <EmptyState pageTitle title="Listing not found" description="This listing may have been deleted." action={<BackButton fallback={paths.listings} />} />
       </Card>
     )
   }

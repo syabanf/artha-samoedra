@@ -327,7 +327,7 @@ export function GoodsReceiptDetailPage() {
   if (!r) {
     return (
       <Card>
-        <EmptyState title="Receipt not found" description="This receipt may have been removed." action={<BackButton fallback={paths.goodsReceipts} />} />
+        <EmptyState pageTitle title="Receipt not found" description="This receipt may have been removed." action={<BackButton fallback={paths.goodsReceipts} />} />
       </Card>
     )
   }

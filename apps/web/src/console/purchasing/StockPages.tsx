@@ -684,7 +684,7 @@ export function StockCountDetailPage() {
   if (!c) {
     return (
       <Card>
-        <EmptyState title="Count not found" description="This count may have been removed." action={<BackButton fallback={paths.stockCounts} />} />
+        <EmptyState pageTitle title="Count not found" description="This count may have been removed." action={<BackButton fallback={paths.stockCounts} />} />
       </Card>
     )
   }

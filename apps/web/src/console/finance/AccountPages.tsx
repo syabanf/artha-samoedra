@@ -502,7 +502,7 @@ export function GlAccountDetailPage() {
   if (!a) {
     return (
       <Card>
-        <EmptyState title="Account not found" description="This account may have been deleted." action={<BackButton fallback={paths.glAccounts} />} />
+        <EmptyState pageTitle title="Account not found" description="This account may have been deleted." action={<BackButton fallback={paths.glAccounts} />} />
       </Card>
     )
   }

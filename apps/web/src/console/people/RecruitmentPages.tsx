@@ -419,7 +419,7 @@ export function OpeningDetailPage() {
   if (!o) {
     return (
       <Card>
-        <EmptyState title="Opening not found" description="This opening may have been removed." action={<BackButton fallback={paths.openings} />} />
+        <EmptyState pageTitle title="Opening not found" description="This opening may have been removed." action={<BackButton fallback={paths.openings} />} />
       </Card>
     )
   }
@@ -814,7 +814,7 @@ export function CandidatePage() {
   if (!c) {
     return (
       <Card>
-        <EmptyState title="Candidate not found" description="This candidate may have been removed." action={<BackButton fallback={paths.openings} />} />
+        <EmptyState pageTitle title="Candidate not found" description="This candidate may have been removed." action={<BackButton fallback={paths.openings} />} />
       </Card>
     )
   }

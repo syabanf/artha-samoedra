@@ -237,7 +237,7 @@ export function UserDetailPage() {
   if (!u) {
     return (
       <Card>
-        <EmptyState title="User not found" action={<BackButton fallback={paths.users} />} />
+        <EmptyState pageTitle title="User not found" action={<BackButton fallback={paths.users} />} />
       </Card>
     )
   }

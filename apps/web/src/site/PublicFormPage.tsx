@@ -21,6 +21,7 @@ export function PublicFormPage() {
       <SiteContainer className="pt-10">
         <Card>
           <EmptyState
+            pageTitle
             title={form ? 'This form is closed' : 'Form not found'}
             description={form ? 'Registration has ended. Browse the properties on offer or chat with Jessy.' : 'The link may be mistyped or the form has been removed.'}
             action={

@@ -413,7 +413,7 @@ export function EmployeeEditorPage() {
   if (id && !old) {
     return (
       <Card>
-        <EmptyState title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.employees} />} />
+        <EmptyState pageTitle title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.employees} />} />
       </Card>
     )
   }
@@ -753,7 +753,7 @@ export function EmployeeDetailPage() {
   if (!e) {
     return (
       <Card>
-        <EmptyState title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.employees} />} />
+        <EmptyState pageTitle title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.employees} />} />
       </Card>
     )
   }

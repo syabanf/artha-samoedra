@@ -1,4 +1,4 @@
-import { fmtIdrShort, JESSY, jessyStep, MAX_LISTING_PHOTOS, nowIso, type AppState, type Engine, type Reply, type Turn, type TurnInput } from '@artha/fixtures'
+import { fmtIdrShort, JESSY, jessyStep, MAX_LISTING_PHOTOS, MAX_MESSAGE_CHARS, nowIso, type AppState, type Engine, type Reply, type Turn, type TurnInput } from '@artha/fixtures'
 import type { AiAgentId } from '@artha/types'
 import { cn, FOCUS, toast } from '@artha/ui'
 import { ArrowUp, Paperclip, Sparkles } from 'lucide-react'
@@ -272,6 +272,7 @@ export function JessyChat({
           id="jessy-input"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          maxLength={MAX_MESSAGE_CHARS}
           placeholder={placeholder}
           autoComplete="off"
           className="h-11 min-w-0 flex-1 rounded-full border-0 bg-surface px-4 text-base outline-none placeholder:text-muted focus:ring-2 focus:ring-accent/20 md:text-sm"

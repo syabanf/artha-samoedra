@@ -405,7 +405,7 @@ export function OpenHouseDetailPage() {
   if (!o) {
     return (
       <Card>
-        <EmptyState title="Open house not found" description="This open house may have been removed." action={<BackButton fallback={paths.openHouses} />} />
+        <EmptyState pageTitle title="Open house not found" description="This open house may have been removed." action={<BackButton fallback={paths.openHouses} />} />
       </Card>
     )
   }

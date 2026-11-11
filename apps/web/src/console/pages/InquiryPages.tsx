@@ -132,7 +132,7 @@ export function InquiryDetailPage() {
   if (!inq) {
     return (
       <Card>
-        <EmptyState title="Inquiry not found" description="This inquiry may have been deleted." action={<BackButton fallback={paths.inquiries} />} />
+        <EmptyState pageTitle title="Inquiry not found" description="This inquiry may have been deleted." action={<BackButton fallback={paths.inquiries} />} />
       </Card>
     )
   }

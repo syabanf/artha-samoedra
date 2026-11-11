@@ -202,7 +202,7 @@ export function BlogEditorPage() {
   if (!saved) {
     return (
       <Card>
-        <EmptyState title="Article not found" action={<BackButton fallback={paths.blogAdmin} />} />
+        <EmptyState pageTitle title="Article not found" action={<BackButton fallback={paths.blogAdmin} />} />
       </Card>
     )
   }

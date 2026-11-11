@@ -264,8 +264,7 @@ export function PurchaseOrderEditorPage() {
   if (id && !old) {
     return (
       <Card>
-        <h1 className="sr-only">Order not found</h1>
-        <EmptyState title="Order not found" description="This order may have been removed." action={<BackButton fallback={paths.pos} />} />
+        <EmptyState pageTitle title="Order not found" description="This order may have been removed." action={<BackButton fallback={paths.pos} />} />
       </Card>
     )
   }
@@ -510,8 +509,7 @@ export function PurchaseOrderDetailPage() {
   if (!po) {
     return (
       <Card>
-        <h1 className="sr-only">Order not found</h1>
-        <EmptyState title="Order not found" description="This order may have been removed." action={<BackButton fallback={paths.pos} />} />
+        <EmptyState pageTitle title="Order not found" description="This order may have been removed." action={<BackButton fallback={paths.pos} />} />
       </Card>
     )
   }

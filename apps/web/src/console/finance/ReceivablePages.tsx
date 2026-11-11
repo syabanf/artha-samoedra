@@ -719,7 +719,7 @@ export function InvoiceEditorPage() {
   if (id && !existing) {
     return (
       <Card>
-        <EmptyState title="Invoice not found" description="This invoice may have been removed." action={<BackButton fallback={paths.invoices} />} />
+        <EmptyState pageTitle title="Invoice not found" description="This invoice may have been removed." action={<BackButton fallback={paths.invoices} />} />
       </Card>
     )
   }
@@ -858,7 +858,7 @@ export function InvoiceDetailPage() {
   if (!inv) {
     return (
       <Card>
-        <EmptyState title="Invoice not found" description="This invoice may have been removed." action={<BackButton fallback={paths.invoices} />} />
+        <EmptyState pageTitle title="Invoice not found" description="This invoice may have been removed." action={<BackButton fallback={paths.invoices} />} />
       </Card>
     )
   }

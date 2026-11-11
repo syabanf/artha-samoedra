@@ -413,7 +413,7 @@ export function SupplierDetailPage() {
   if (!v) {
     return (
       <Card>
-        <EmptyState title="Supplier not found" description="This supplier may have been removed." action={<BackButton fallback={paths.suppliers} />} />
+        <EmptyState pageTitle title="Supplier not found" description="This supplier may have been removed." action={<BackButton fallback={paths.suppliers} />} />
       </Card>
     )
   }

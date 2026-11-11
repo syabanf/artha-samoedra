@@ -82,7 +82,7 @@ export function PartnerDetailPage() {
   if (!p) {
     return (
       <Card>
-        <EmptyState title="Partner not found" action={<BackButton fallback={paths.partners} />} />
+        <EmptyState pageTitle title="Partner not found" action={<BackButton fallback={paths.partners} />} />
       </Card>
     )
   }

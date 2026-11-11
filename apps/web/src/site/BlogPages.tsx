@@ -62,6 +62,7 @@ export function BlogPostPage() {
       <SiteContainer className="max-w-3xl pt-10">
         <Card>
           <EmptyState
+            pageTitle
             title="Article not found"
             description="This article is not published yet or its address has changed."
             action={

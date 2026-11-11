@@ -31,6 +31,7 @@ export function AssetDetailPage() {
       <SiteContainer className="pt-10">
         <Card>
           <EmptyState
+            pageTitle
             title="Property not found"
             description="This property has been sold, withdrawn by its owner, or moved to a new address."
             action={

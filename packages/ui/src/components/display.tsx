@@ -1,5 +1,5 @@
 import { cva } from 'class-variance-authority'
-import { CircleAlert, CircleCheck, Inbox, Info, TriangleAlert, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, Inbox, Info, SearchX, TriangleAlert, X } from 'lucide-react'
 import type { ComponentProps, ReactNode } from 'react'
 import { cn, FOCUS } from '../lib/cn'
 
@@ -202,12 +202,17 @@ export function KeyValue({ items, bare, size = 'md' }: { items: KeyValueItem[]; 
   )
 }
 
+/**
+ * An empty list, or with `pageTitle` the whole page's "not found" state: the title becomes the
+ * page's h1 and a missing description falls back to a sentence about old links.
+ */
 export function EmptyState({
   title,
   description,
   action,
-  icon = <Inbox />,
+  icon,
   compact,
+  pageTitle,
   className,
 }: {
   title: string
@@ -215,15 +220,19 @@ export function EmptyState({
   action?: ReactNode
   icon?: ReactNode
   compact?: boolean
+  pageTitle?: boolean
   className?: string
 }) {
+  const Title = pageTitle ? 'h1' : 'p'
+  const shown = icon === undefined ? (pageTitle ? <SearchX /> : <Inbox />) : icon
+  const text = description ?? (pageTitle ? 'The link may be old, or the record was removed.' : undefined)
   return (
     <div className={cn('flex flex-col items-center justify-center gap-2 text-center', compact ? 'px-4 py-8' : 'px-6 py-12', className)}>
-      {icon && (
-        <div className="mb-1 flex size-12 items-center justify-center rounded-full bg-surface text-muted [&_svg]:size-6">{icon}</div>
+      {shown && (
+        <div className="mb-1 flex size-12 items-center justify-center rounded-full bg-surface text-muted [&_svg]:size-6">{shown}</div>
       )}
-      <p className="text-sm font-semibold text-foreground">{title}</p>
-      {description && <p className="max-w-xs text-sm text-muted">{description}</p>}
+      <Title className={cn('font-semibold text-foreground', pageTitle ? 'text-lg' : 'text-sm')}>{title}</Title>
+      {text && <p className="max-w-xs text-sm text-muted">{text}</p>}
       {action && <div className="mt-2">{action}</div>}
     </div>
   )

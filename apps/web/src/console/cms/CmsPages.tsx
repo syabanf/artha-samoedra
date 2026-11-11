@@ -163,7 +163,7 @@ export function CmsPageEditor() {
   if (!saved) {
     return (
       <Card>
-        <EmptyState title="Page not found" action={<BackButton fallback={paths.cmsPages} />} />
+        <EmptyState pageTitle title="Page not found" action={<BackButton fallback={paths.cmsPages} />} />
       </Card>
     )
   }

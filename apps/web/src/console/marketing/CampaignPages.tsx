@@ -330,7 +330,7 @@ export function CampaignDetailPage() {
   if (!c) {
     return (
       <Card>
-        <EmptyState title="Campaign not found" description="This campaign may have been deleted." action={<BackButton fallback={paths.campaigns} />} />
+        <EmptyState pageTitle title="Campaign not found" description="This campaign may have been deleted." action={<BackButton fallback={paths.campaigns} />} />
       </Card>
     )
   }

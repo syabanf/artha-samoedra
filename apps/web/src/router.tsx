@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router'
+import { ConsoleRouteError, SiteRouteError } from './components/RouteError'
 import { SiteLayout } from './site/SiteLayout'
 
 /** Each page loads as its own chunk. */
@@ -13,6 +14,7 @@ export const router = createBrowserRouter([
   {
     Component: SiteLayout,
     HydrateFallback: Fallback,
+    ErrorBoundary: SiteRouteError,
     children: [
       { index: true, lazy: page(() => import('./site/HomePage'), 'HomePage') },
       { path: 'properties', lazy: page(() => import('./site/AssetsPage'), 'AssetsPage') },
@@ -32,14 +34,16 @@ export const router = createBrowserRouter([
       { path: 'careers/c/:token', lazy: page(() => import('./site/CandidatePortalPages'), 'CandidatePortalPage') },
       { path: 'careers/c/:token/test/:testId', lazy: page(() => import('./site/CandidatePortalPages'), 'CandidateTestPage') },
       { path: 'share/:token', lazy: page(() => import('./site/SharePublicPage'), 'SharePublicPage') },
+      { path: '*', lazy: page(() => import('./site/NotFoundPage'), 'NotFoundPage') },
     ],
   },
   { path: 'console/login', lazy: page(() => import('./console/pages/LoginPage'), 'LoginPage') },
-  { path: 'console/os', lazy: page(() => import('./console/os/DesktopPage'), 'DesktopPage') },
+  { path: 'console/os', lazy: page(() => import('./console/os/DesktopPage'), 'DesktopPage'), ErrorBoundary: ConsoleRouteError },
   {
     path: 'console',
     lazy: page(() => import('./console/layouts/ConsoleLayout'), 'ConsoleRoot'),
     HydrateFallback: Fallback,
+    ErrorBoundary: ConsoleRouteError,
     children: [
       { index: true, lazy: page(() => import('./console/pages/DashboardPage'), 'DashboardPage') },
       { path: 'listings', lazy: page(() => import('./console/pages/ListingsPage'), 'ListingsPage') },
@@ -247,6 +251,7 @@ export const router = createBrowserRouter([
         ],
       },
       { path: 'search', lazy: page(() => import('./console/search/SearchPage'), 'SearchPage') },
+      { path: '*', lazy: page(() => import('./console/pages/NotFoundPage'), 'ConsoleNotFoundPage') },
       { path: 'assistant', lazy: page(() => import('./console/assistant/AssistantPage'), 'AssistantPage') },
       { path: 'audit', lazy: page(() => import('./console/pages/AuditPage'), 'AuditPage') },
       {

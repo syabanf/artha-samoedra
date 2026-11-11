@@ -287,7 +287,7 @@ export function AccountDetailPage() {
   if (!a) {
     return (
       <Card>
-        <EmptyState title="Account not found" description="This account may have been removed." action={<BackButton fallback={paths.accounts} />} />
+        <EmptyState pageTitle title="Account not found" description="This account may have been removed." action={<BackButton fallback={paths.accounts} />} />
       </Card>
     )
   }

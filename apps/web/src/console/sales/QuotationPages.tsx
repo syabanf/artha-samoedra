@@ -337,7 +337,7 @@ export function QuotationEditorPage() {
   if (id && !revising) {
     return (
       <Card>
-        <EmptyState title="Quotation not found" description="This quotation may have been removed." action={<BackButton fallback={paths.quotations} />} />
+        <EmptyState pageTitle title="Quotation not found" description="This quotation may have been removed." action={<BackButton fallback={paths.quotations} />} />
       </Card>
     )
   }
@@ -628,7 +628,7 @@ export function QuotationDetailPage() {
   if (!q) {
     return (
       <Card>
-        <EmptyState title="Quotation not found" description="This quotation may have been removed." action={<BackButton fallback={paths.quotations} />} />
+        <EmptyState pageTitle title="Quotation not found" description="This quotation may have been removed." action={<BackButton fallback={paths.quotations} />} />
       </Card>
     )
   }

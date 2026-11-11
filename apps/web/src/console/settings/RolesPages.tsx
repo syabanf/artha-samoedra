@@ -52,7 +52,7 @@ export function RoleDetailPage() {
   if (id !== 'new' && !existing) {
     return (
       <Card>
-        <EmptyState title="Role not found" action={<BackButton fallback={paths.roles} />} />
+        <EmptyState pageTitle title="Role not found" action={<BackButton fallback={paths.roles} />} />
       </Card>
     )
   }

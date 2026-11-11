@@ -345,7 +345,7 @@ export function ProjectDetailPage() {
   if (!p) {
     return (
       <Card>
-        <EmptyState title="Project not found" description="This project may have been removed." action={<BackButton fallback={paths.projects} />} />
+        <EmptyState pageTitle title="Project not found" description="This project may have been removed." action={<BackButton fallback={paths.projects} />} />
       </Card>
     )
   }

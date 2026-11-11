@@ -15,6 +15,7 @@ import type { Engine, Reply, Turn } from './jessy'
 import { bestPrice, fmtQty, lowStock, nextPrCode, onHand, prsAwaiting, prTotal, stockByWarehouse } from './purchasing'
 import type { AppAction, AppState } from './store'
 import { blockerFor, reduce } from './store'
+import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
 
 export interface ConsoleCtx {
   userId: string
@@ -572,6 +573,8 @@ const consoleStep = (s: AppState, convo: ConsoleConvo, raw: string, at: string):
     if (CANCEL.test(t)) return say({ ...convo, pending: null }, 'Cancel change', [], { text: 'Cancelled. Nothing changed.', quick: starters(convo.ctx) })
   }
   const c: ConsoleConvo = { ...convo, pending: null }
+  const guard = guardMessage(text, 'console')
+  if (guard) return say(c, GUARD_PURPOSE, [], { text: guardReply(guard, 'console', text), quick: starters(c.ctx) })
   if (CONFIRM.test(t) || CANCEL.test(t)) return say(c, 'Chat turn', [], { text: 'There is no change waiting. Ask me something, or type "help".' })
   if (has(t, /^(help|bantuan|menu|what can you do|apa yang bisa)/)) return help(c)
 

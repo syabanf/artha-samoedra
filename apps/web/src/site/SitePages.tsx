@@ -47,6 +47,7 @@ const notFound = (title: string) => (
   <SiteContainer className="pt-10">
     <Card>
       <EmptyState
+        pageTitle
         title={title}
         description="This page was moved or is not published yet."
         action={

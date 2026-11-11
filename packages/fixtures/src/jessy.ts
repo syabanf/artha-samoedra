@@ -11,6 +11,7 @@ import { fmtArea, fmtIdrShort, newId } from './format'
 import { aiCall, rememberFacts, TOOL_FOR_ACTION } from './gateway'
 import type { AppAction, AppState } from './store'
 import { buildInquiry, buildListing, buildPartner, delistBlocker, JESSY, reduce } from './store'
+import { GUARD_PURPOSE, guardMessage, guardReply } from './guardrails'
 
 export interface Reply {
   text: string
@@ -286,6 +287,11 @@ export const buyerTurn = (s: AppState, convo: BuyerConvo, raw: string, at: strin
 
   if (convo.stage !== 'idle' && CANCEL.test(t)) {
     return { convo: { ...convo, stage: 'idle' }, actions: [], replies: [{ text: 'Cancelled. Anything else I can help with?' }] }
+  }
+  // Name and phone answers are free text, so the guard skips them.
+  const guard = convo.stage === 'name' || convo.stage === 'phone' ? null : guardMessage(text, 'public')
+  if (guard) {
+    return { convo, actions: [], replies: [{ text: guardReply(guard, 'public', text), quick: ['House in Jakarta', 'Book a site visit', 'Contact me'] }], log: { purpose: GUARD_PURPOSE } }
   }
 
   switch (convo.stage) {

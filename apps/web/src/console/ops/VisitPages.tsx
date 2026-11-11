@@ -678,7 +678,7 @@ export function VisitDetailPage() {
   if (!v) {
     return (
       <Card>
-        <EmptyState title="Visit not found" description="This visit may have been removed." action={<BackButton fallback={paths.visits} />} />
+        <EmptyState pageTitle title="Visit not found" description="This visit may have been removed." action={<BackButton fallback={paths.visits} />} />
       </Card>
     )
   }

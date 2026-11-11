@@ -381,7 +381,7 @@ export function PaymentDetailPage() {
   if (!p) {
     return (
       <Card>
-        <EmptyState title="Payment not found" description="This payment may have been removed." action={<BackButton fallback={paths.payments} />} />
+        <EmptyState pageTitle title="Payment not found" description="This payment may have been removed." action={<BackButton fallback={paths.payments} />} />
       </Card>
     )
   }

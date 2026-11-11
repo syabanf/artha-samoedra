@@ -108,6 +108,8 @@ type Answer struct {
 	Proposals      []Proposal        `json:"proposals"`
 	ToolCalls      []ToolCallSummary `json:"toolCalls"`
 	Usage          Usage             `json:"usage"`
+	// Guarded marks a reply from the guard, which never reached the model.
+	Guarded bool `json:"guarded,omitempty"`
 }
 
 // Send runs one member message through the tool loop. An empty conversationID starts a new
@@ -127,6 +129,10 @@ func (s *Service) Send(ctx context.Context, conversationID, text string) (Answer
 	conv, err := s.ownConversation(ctx, actor, conversationID)
 	if err != nil {
 		return Answer{}, err
+	}
+	if refusal := guard(text); refusal != "" {
+		ans := Answer{ConversationID: conv.ID, Reply: refusal, Proposals: []Proposal{}, ToolCalls: []ToolCallSummary{}, Guarded: true}
+		return ans, s.saveTurn(ctx, conv, text, ans, nil)
 	}
 
 	msgs := []Message{{Role: RoleSystem, Content: s.systemPrompt(ctx, actor)}}
@@ -172,19 +178,24 @@ func (s *Service) Send(ctx context.Context, conversationID, text string) (Answer
 		ans.Proposals = t.proposals
 	}
 
-	now := s.now()
 	ids := make([]string, len(t.proposals))
 	for i, p := range t.proposals {
 		ids[i] = p.ID
 	}
-	conv.Turns = append(conv.Turns,
-		Turn{Role: RoleUser, Content: text, At: now},
-		Turn{Role: RoleAssistant, Content: ans.Reply, At: now, ToolCalls: ans.ToolCalls, ProposalIDs: ids})
-	conv.UpdatedAt = now
-	if err := s.store.SaveConversation(ctx, conv); err != nil {
+	if err := s.saveTurn(ctx, conv, text, ans, ids); err != nil {
 		return Answer{}, err
 	}
 	return ans, nil
+}
+
+// saveTurn appends the member's message and Jessy's answer to the conversation.
+func (s *Service) saveTurn(ctx context.Context, conv Conversation, text string, ans Answer, proposalIDs []string) error {
+	now := s.now()
+	conv.Turns = append(conv.Turns,
+		Turn{Role: RoleUser, Content: text, At: now},
+		Turn{Role: RoleAssistant, Content: ans.Reply, At: now, ToolCalls: ans.ToolCalls, ProposalIDs: proposalIDs})
+	conv.UpdatedAt = now
+	return s.store.SaveConversation(ctx, conv)
 }
 
 func (s *Service) ownConversation(ctx context.Context, actor iam.Actor, id string) (Conversation, error) {

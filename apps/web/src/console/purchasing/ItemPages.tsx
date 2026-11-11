@@ -317,7 +317,7 @@ export function ItemDetailPage() {
   if (!item) {
     return (
       <Card>
-        <EmptyState title="Item not found" description="This item may have been removed." action={<BackButton fallback={paths.items} />} />
+        <EmptyState pageTitle title="Item not found" description="This item may have been removed." action={<BackButton fallback={paths.items} />} />
       </Card>
     )
   }

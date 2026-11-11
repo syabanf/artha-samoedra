@@ -67,7 +67,7 @@ const movement = (j: JournalEntry, accountId: string) => j.lines.filter((l) => l
 function NotFound() {
   return (
     <Card>
-      <EmptyState title="Account not found" description="This is not an active cash or bank account." action={<BackButton fallback={paths.cash} />} />
+      <EmptyState pageTitle title="Account not found" description="This is not an active cash or bank account." action={<BackButton fallback={paths.cash} />} />
     </Card>
   )
 }

@@ -586,7 +586,7 @@ export function BillEditorPage() {
   if (id && !old) {
     return (
       <Card>
-        <EmptyState title="Bill not found" description="This bill may have been removed." action={<BackButton fallback={paths.bills} />} />
+        <EmptyState pageTitle title="Bill not found" description="This bill may have been removed." action={<BackButton fallback={paths.bills} />} />
       </Card>
     )
   }
@@ -728,7 +728,7 @@ export function BillDetailPage() {
   if (!b) {
     return (
       <Card>
-        <EmptyState title="Bill not found" description="This bill may have been removed." action={<BackButton fallback={paths.bills} />} />
+        <EmptyState pageTitle title="Bill not found" description="This bill may have been removed." action={<BackButton fallback={paths.bills} />} />
       </Card>
     )
   }

@@ -442,7 +442,7 @@ export function ContactDetailPage() {
   if (!c) {
     return (
       <Card>
-        <EmptyState title="Contact not found" description="This contact may have been merged or removed." action={<BackButton fallback={paths.contacts} />} />
+        <EmptyState pageTitle title="Contact not found" description="This contact may have been merged or removed." action={<BackButton fallback={paths.contacts} />} />
       </Card>
     )
   }

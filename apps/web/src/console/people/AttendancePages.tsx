@@ -532,7 +532,7 @@ export function AttendanceEmployeePage() {
   if (!e) {
     return (
       <Card>
-        <EmptyState title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.attendance} />} />
+        <EmptyState pageTitle title="Employee not found" description="This employee may have been removed." action={<BackButton fallback={paths.attendance} />} />
       </Card>
     )
   }
