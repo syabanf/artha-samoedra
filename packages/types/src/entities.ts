@@ -1,6 +1,7 @@
 import type {
   AgentEventKind,
   AssetType,
+  RentBilling,
   ContentStatus,
   DealType,
   InquiryChannel,
@@ -243,4 +244,37 @@ export interface HistoryEntry {
   by: string
   ref: string
   text: string
+}
+
+/**
+ * A tenancy on a `sewa` listing that Artha Samoedra manages for the consigning partner. Artha
+ * collects the rent, keeps `feePct` of each payment, and pays the rest to the owner. When an agent
+ * consigned the listing, the agent earns `agentPct` of Artha's fee.
+ */
+export interface Lease {
+  id: string
+  code: string
+  listingId: string
+  tenant: string
+  /** The owner an agent represents; null when the owner consigned the listing directly. */
+  ownerName: string | null
+  startDate: string
+  endDate: string
+  billing: RentBilling
+  /** Rent for one billing period. */
+  rent: number
+  deposit: number
+  feePct: number
+  agentPct: number
+}
+
+/** One billing period of a lease: billed to the tenant, then paid out to the owner. */
+export interface RentBill {
+  id: string
+  leaseId: string
+  periodStart: string
+  dueDate: string
+  amount: number
+  paidAt: string | null
+  payoutAt: string | null
 }

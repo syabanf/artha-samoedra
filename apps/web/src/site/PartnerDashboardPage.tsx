@@ -1,4 +1,4 @@
-import { currentExclusive, daysLeft, exclusiveState, fmtDate, fmtIdr, fmtIdrShort, fmtNumber, normalizePhone, partyRule, SETTLEMENT_STATUS_LABEL } from '@artha/fixtures'
+import { currentExclusive, partnerRentals, daysLeft, exclusiveState, fmtDate, fmtIdr, fmtIdrShort, fmtNumber, normalizePhone, partyRule, SETTLEMENT_STATUS_LABEL } from '@artha/fixtures'
 import { Button, Card, CardContent, CardHeader, CardTitle, EmptyState, FormField, Input, Kicker, StatCard } from '@artha/ui'
 import { PARTNER_KIND_LABEL, PUBLIC_LISTING_STATUSES, type Listing } from '@artha/types'
 import { ArrowRight, Building2, Eye, LogOut, MessageSquareText, Phone, Wallet } from 'lucide-react'
@@ -9,10 +9,11 @@ import { paths } from '../components/links'
 import { useDocumentMeta } from '../lib/meta'
 import { usePersistentState } from '../lib/storage'
 import { useAppState, useNow } from '../state/store'
+import { PartnerRentals } from './PartnerRentals'
 import { SiteContainer } from './SiteLayout'
 
 export function PartnerDashboardPage() {
-  useDocumentMeta('Partner dashboard · Artha Samoedra', 'Owners, agents and developers see their listings, exclusive rights, portal reach and profit-share earnings.')
+  useDocumentMeta('Partner dashboard · Artha Samoedra', 'Owners, agents and developers see their listings, managed rentals, exclusive rights, portal reach and profit-share earnings.')
   const { state } = useAppState()
   const [phone, setPhone] = usePersistentState<string>('partnerPhone', '')
   const partner = phone ? state.partners.find((p) => normalizePhone(p.phone) === phone) : undefined
@@ -84,8 +85,14 @@ function Dashboard({ partnerId, onSignOut }: { partnerId: string; onSignOut: () 
       return line && listing ? [{ settlement: st, line, listing }] : []
     })
     .sort((a, b) => b.settlement.closedAt.localeCompare(a.settlement.closedAt))
-  const earned = earnings.reduce((n, e) => n + e.line.amount, 0)
-  const paidOut = earnings.filter((e) => e.settlement.status === 'paid').reduce((n, e) => n + e.line.amount, 0)
+  const rentals = partnerRentals(state, partnerId, now)
+  // Rent counts as earnings too: an owner earns the net rent, an agent its commission from Artha's fee.
+  const agent = partner.kind === 'agent'
+  const rentEarned = rentals.reduce((n, r) => n + (agent ? r.agentFee : r.ownerNet), 0)
+  const rentPaid = rentals.reduce((n, r) => n + (agent ? r.agentPaidOut : r.paidOut), 0)
+  const shareEarned = earnings.reduce((n, e) => n + e.line.amount, 0)
+  const earned = shareEarned + rentEarned
+  const paidOut = earnings.filter((e) => e.settlement.status === 'paid').reduce((n, e) => n + e.line.amount, 0) + rentPaid
   const live = listings.filter((l) => PUBLIC_LISTING_STATUSES.includes(l.status)).length
   const totalViews = listings.reduce((n, l) => n + reach(l).views, 0)
 
@@ -190,6 +197,8 @@ function Dashboard({ partnerId, onSignOut }: { partnerId: string; onSignOut: () 
         </CardContent>
       </Card>
 
+      <PartnerRentals rentals={rentals} agent={agent} />
+
       <Card>
         <CardHeader>
           <CardTitle>Profit-share earnings</CardTitle>
@@ -213,7 +222,7 @@ function Dashboard({ partnerId, onSignOut }: { partnerId: string; onSignOut: () 
               ))}
               <li className="flex items-center justify-between gap-3 pt-3 text-sm font-bold">
                 <span>Total</span>
-                <span className="tabular-nums">{fmtIdr(earned)}</span>
+                <span className="tabular-nums">{fmtIdr(shareEarned)}</span>
               </li>
             </ul>
           ) : (

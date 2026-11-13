@@ -92,3 +92,8 @@ export const AGENT_EVENT_KIND_LABEL: Record<AgentEventKind, string> = {
   reminder: 'Reminder',
   content: 'Content',
 }
+
+/** How often a managed tenancy bills its tenant. */
+export type RentBilling = 'monthly' | 'quarterly' | 'yearly'
+export const RENT_BILLING_LABEL: Record<RentBilling, string> = { monthly: 'Monthly', quarterly: 'Quarterly', yearly: 'Yearly' }
+export const RENT_BILLING_MONTHS: Record<RentBilling, number> = { monthly: 1, quarterly: 3, yearly: 12 }

@@ -1,4 +1,6 @@
 import type {
+  Lease,
+  RentBill,
   ItemCategory,
   Uom,
   Item,
@@ -130,6 +132,7 @@ import { dataroomApply, dataroomBlocker, isDataroomAction, type DataroomAction }
 import { hrApply, hrBlocker, isHrAction, type HrAction } from './hr'
 import { patchById } from './rows'
 import * as seed from './seed'
+import * as rentalSeed from './seed-rental'
 import * as crmSeed from './seed-crm'
 import * as opsSeed from './seed-ops'
 import * as iamSeed from './seed-iam'
@@ -253,6 +256,8 @@ export interface AppState {
   dataFiles: DataFile[]
   shareLinks: ShareLink[]
   shareEvents: ShareEvent[]
+  leases: Lease[]
+  rentBills: RentBill[]
 }
 
 export const seedState = (): AppState =>
@@ -367,6 +372,8 @@ export const seedState = (): AppState =>
     dataFiles: roomSeed.DATA_FILES,
     shareLinks: roomSeed.SHARE_LINKS,
     shareEvents: roomSeed.SHARE_EVENTS,
+    leases: rentalSeed.LEASES,
+    rentBills: rentalSeed.RENT_BILLS,
   })
 
 export type AppAction =

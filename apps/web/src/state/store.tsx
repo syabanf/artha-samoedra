@@ -17,7 +17,7 @@ import { createContext, use, useEffect, useReducer, useRef, useState, type React
 import { NS, readJson, writeJson } from '../lib/storage'
 
 const KEY = `${NS}.state.v8`
-const VERSION = 15
+const VERSION = 16
 
 const load = (): AppState => {
   const saved = readJson<{ version: number; state: AppState }>(KEY)
