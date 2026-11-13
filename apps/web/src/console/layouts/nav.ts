@@ -23,6 +23,7 @@ import {
   MonitorSmartphone,
   UserRound,
   Sparkles,
+  LifeBuoy,
   type LucideIcon,
 } from 'lucide-react'
 import { paths } from '../../components/links'
@@ -63,6 +64,7 @@ export const NAV: NavItem[] = [
   { to: paths.ai, label: 'AI gateway', icon: Cpu, needs: 'jessy.view' },
   { to: paths.audit, label: 'Audit log', icon: ScrollText, needs: 'audit.view' },
   { to: paths.settings, label: 'Settings', icon: Settings, needs: 'settings.view' },
+  { to: paths.guide, label: 'How to use', icon: LifeBuoy },
 ]
 
 export const PHONE_NAV = [paths.console, paths.listings, paths.inquiries, paths.exclusives]

@@ -253,6 +253,7 @@ export const router = createBrowserRouter([
       { path: 'search', lazy: page(() => import('./console/search/SearchPage'), 'SearchPage') },
       { path: '*', lazy: page(() => import('./console/pages/NotFoundPage'), 'ConsoleNotFoundPage') },
       { path: 'assistant', lazy: page(() => import('./console/assistant/AssistantPage'), 'AssistantPage') },
+      { path: 'guide', lazy: page(() => import('./console/pages/GuidePage'), 'GuidePage') },
       { path: 'audit', lazy: page(() => import('./console/pages/AuditPage'), 'AuditPage') },
       {
         path: 'settings',

@@ -149,6 +149,7 @@ export const SECTION_PAGES: { to: string; label: string; section: string; needs?
   { to: paths.meRequests, label: 'My requests', section: 'My space' },
   { to: paths.mePayslips, label: 'My payslips', section: 'My space' },
   { to: paths.shareLinks, label: 'Share links', section: 'Dataroom', needs: 'dataroom.share' },
+  { to: paths.guide, label: 'How to use', section: 'Help' },
 ]
 
 const RECENT_MAX = 5

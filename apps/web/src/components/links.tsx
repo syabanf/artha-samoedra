@@ -190,6 +190,7 @@ export const paths = {
   // Workspace
   search: '/console/search',
   assistant: '/console/assistant',
+  guide: '/console/guide',
   os: '/console/os',
   // Public
   careers: '/careers',
